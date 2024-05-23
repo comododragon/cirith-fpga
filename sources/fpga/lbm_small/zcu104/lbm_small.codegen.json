@@ -1,0 +1,7 @@
+{
+	"makefile": ["Makefile", "benchmarks/lbm_small/src/sdx_zcu104/Makefile", "benchmarks/lbm_small/src/sdx_zcu104/hls_hook.tcl"],
+	"clsource": "benchmarks/lbm_small/src/sdx_zcu104/lbm_small.cl",
+	"patches": {
+		"en-expl-unroll-writeback-loops": true
+	}
+}

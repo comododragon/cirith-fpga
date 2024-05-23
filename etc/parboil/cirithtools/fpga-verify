@@ -1,0 +1,56 @@
+#!/bin/bash
+
+set -e
+
+if [ $# -ne 2 ]; then
+	echo "Usage: $0 KERNEL DATASET" >&2
+	exit -1
+fi
+
+echo -n "[fpga-verify] Please take your moment now to insert the sdcard on this PC and mount. Then, press ENTER to continue... "
+read INPUT
+
+# If $ZYN_SDMNTPATH is not set, try to find it out
+if [ -z $ZYN_SDMNTPATH ]; then
+	ZYN_SDMNTPATH=$(cat /proc/mounts | grep /dev/mmcblk0p1 | cut -d ' ' -f 2)
+	# Still nothing? Give up then...
+	if [ -z $ZYN_SDMNTPATH ]; then
+		echo "Error: \$ZYN_SDMNTPATH is not set, and no mountpoint was found for /dev/mmcblk0p1 (standard value)" >&2
+		echo "       Please either set \$ZYN_SDMNTPATH, or check your sdcard mountpoint" >&2
+		exit -2
+	else
+		echo "[fpga-verify] \$ZYN_SDMNTPATH is not set. Will consider the first partition of mmcblk0: $ZYN_SDMNTPATH"
+	fi
+fi
+
+# Check for $ZYN_SDMNTPATH/.allowed
+if [ ! -e "$ZYN_SDMNTPATH/.allowed" ]; then
+	echo "WARNING: the make command will expect the file \"$ZYN_SDMNTPATH/.allowed\" to be generated" >&2
+	echo "         This authorises the benchmark content to be copied to $ZYN_SDMNTPATH with overwrite" >&2
+	echo "         potential. If such file is not found, the make command will fail (and potentially" >&2
+	echo "         your cirith run). This file must be created only once per sdcard (or if you delete" >&2
+	echo "         the file)" >&2
+	echo -n "Create the \"$ZYN_SDMNTPATH/.allowed\" file? [y/N] " >&2
+	read INPUT
+
+	if [ "y" == "$INPUT" ]; then
+		touch "$ZYN_SDMNTPATH/.allowed"
+	else
+		echo "[fpga-verify] The .allowed file was not generated. Good luck!" >&2
+	fi
+fi
+
+echo "[fpga-verify] Will now export to sdcard"
+make DATASET=$2 SDMNTPATH=$ZYN_SDMNTPATH export 
+
+echo "[fpga-verify] The sdcard is prepared. Eject it, boot and run the FPGA board. Then run:"
+echo "[fpga-verify] \$ ./execute"
+echo "[fpga-verify] \$ poweroff"
+echo -n "[fpga-verify] then reinsert the sdcard here and press ENTER... "
+read INPUT
+
+echo "[fpga-verify] Importing from sdcard"
+make DATASET=$2 SDMNTPATH=$ZYN_SDMNTPATH import
+
+echo "[fpga-verify] Now verifying"
+make DATASET=$2 check | tail -n 1 > .tmp

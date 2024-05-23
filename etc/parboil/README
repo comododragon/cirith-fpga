@@ -1,0 +1,8 @@
+Insert parboil benchmark root directory here! I.e., go to Parboil website:
+
+- http://impact.crhc.illinois.edu/parboil/parboil_download_page.aspx
+
+Download the two .tar.gz files (no need to download the benchmarks) and assemble the parboil folders accordingly (assuming that <PBROOT> is the directory where this README is located):
+
+- pb2.5driver.tgz, extract to <PBROOT>
+- pb2.5datasets.tgz, extract to <PBROOT>/datasets

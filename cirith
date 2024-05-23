@@ -1,0 +1,1681 @@
+#!/usr/bin/env python3
+
+
+from enum import Enum
+import configparser, datetime, getopt, os, re, shlex, shutil, subprocess, sys, tempfile
+try:
+	import tarfile, zlib
+except ImportError:
+	tarfile = None
+
+
+appName = os.path.basename(os.path.splitext(__file__)[0])
+MAX_KNOB_RANGE = 4
+
+
+class Errors(Enum):
+	NO_ERRORS = ("No errors", False)
+	EXTERNAL_ERROR = ("An error happened outside of this tool. Additional info may follow", False)
+	INVALID_COMMAND = ("Invalid command passed", True)
+	INVALID_SUBCOMMAND = ("Invalid subcommand passed", True)
+	GETOPT_ERROR = ("Error parsing arguments", True)
+	MISSING_ARGUMENT = ("Missing argument for this command", True)
+	SOURCE_NOT_FOUND = ("Source folder not found", False)
+	EXPERIMENT_NOT_FOUND = ("Experiment folder not found", False)
+	EXPERIMENT_NOT_FULLY_GENERATED = ("Experiment folder found, however the \".generated\" file is missing (i.e. experiment might be incomplete)", False)
+	SETUP_NOT_EXPLORED = ("Experiment/setup folder found, however the \".explored\" file is missing (i.e. setup was not explored)", False)
+	SETUP_NOT_DECIDED = ("Experiment/setup folder found, however the \".decided\" file is missing (i.e. setup was not decided)", False)
+	KNOB_PROJECT_NOT_FOUND = ("Knob project not found", False)
+	ABORTED = ("Execution aborted", False)
+	CONFLICTING_PARAMETERS = ("Parameters are in conflict", True)
+	VERIFY_FAILED = ("Cannot verify experiment, temporary file \".tmp\" was not generated", False)
+	PROFILE_FAILED = ("Cannot profile experiment, temporary file \".tmp\" was not generated", False)
+	PROFILE_FILES_NOT_FOUND = ("Profile files not found (i.e. \".energies\" and \".exectimes\" files)", False)
+	CSV_DUPLICATE_ENTRIES = ("Duplicate timestamp entries found in the CSV file", False)
+	CSV_FILE_EMPTY = ("CSV file is empty, cannot generate backup folder/zip", False)
+	CSV_BACKUP_ALREADY_EXISTS = ("CSV backup file/folder already exists", False)
+
+
+class Warnings(Enum):
+	IGNORING_ARGUMENT = "Ignoring argument"
+	USING_DEFAULT_VALUE = "Using default value"
+	CONFLICTING_PARAMETERS = "Parameters are in conflict"
+	GLOBAL_CFG_NOT_FOUND = "Global configuration file (global.cfg) not found for selected kernel. Using software defaults"
+	SOURCE_CONFIG_NOT_FOUND = "Configuration file for selected source not found, will use default values from global.cfg"
+	BACKUP_LIBS_NOT_FOUND = "Could not import the compress libraries for backup (i.e. \"zlib\" and \"tarfile\"). Will generate a folder instead"
+	CSV_BACKUP_ALREADY_EXISTS = "CSV backup file/folder already exists. The new backup will be renamed"
+	COLLECT_MISSING = "Lina setup / variant / knob folder missing or wasn´t profiled. Will skip"
+
+
+def printWithTag(*args, **kwargs):
+	sys.stdout.write("\033[1;34m[cirith]\033[0m ")
+	sys.stdout.write(*args, **kwargs)
+
+
+def printErrWithTag(*args, **kwargs):
+	sys.stderr.write("\033[1;31m[cirith]\033[0m ")
+	sys.stderr.write(*args, **kwargs)
+
+
+def printWarnWithTag(*args, **kwargs):
+	sys.stderr.write("\033[1;35m[cirith]\033[0m ")
+	sys.stderr.write(*args, **kwargs)
+
+
+def levelPrint(string, level, printFunction=print):
+	tabString = "\t" * level
+	outString = re.sub(r"^", tabString, string, flags=re.MULTILINE)
+	outString = re.sub(r"\r", "\r" + tabString, outString, flags=re.MULTILINE)
+
+	printFunction(outString)
+	sys.stdout.write("\r")
+
+
+def printError(error, usageFunc, mustExit=False, addInfo=None, addInfos=[]):
+	printErrWithTag("Error: {}{}\n".format(error.value[0], ": {}".format(addInfo) if addInfo is not None else ""))
+	for i in addInfos:
+		levelPrint(i[1], i[0], printFunction=printErrWithTag)
+		sys.stderr.write("\n")
+
+	if error.value[1]:
+		sys.stderr.write("\n")
+		usageFunc(True)
+	if mustExit:
+		exit(1)
+
+
+def printWarning(warning, addInfo=None, addInfos=[]):
+	printWarnWithTag("Warning: {}{}\n".format(warning.value, ": {}".format(addInfo) if addInfo is not None else ""))
+	for i in addInfos:
+		levelPrint(i[1], i[0], printFunction=printWarnWithTag)
+		sys.stdout.write("\n")
+
+
+class Usages:
+	def __init__(self):
+		pass
+
+	def general(self, printToError=False):
+		usageStr = (
+			'Cirith(Ungol): the last part of the journey\n'
+			'\n'
+			'Usage: {0} PLATFORM ...\n'
+			'Where PLATFORM may be:\n'
+			'	fpga\n'
+			'	help: show this message\n'
+			'\n'
+			'For further information on options for a PLATFORM, run:\n'
+			'{0} PLATFORM --help'.format(appName)
+		)
+	
+		if printToError:
+			sys.stderr.write("{}\n".format(usageStr))
+		else:
+			print(usageStr)
+
+	def help(self, printToError=False):
+		usageStr = (
+			'Help: show a help message\n'
+			'\n'
+			'Usage: {} help [OPTION]...\n'
+			'Where OPTION may be:\n'
+			'	-h, --help: you need help on help?'.format(appName)
+		)
+	
+		if printToError:
+			sys.stderr.write("{}\n".format(usageStr))
+		else:
+			print(usageStr)
+
+	def fpga(self, printToError=False):
+		usageStr = (
+			'fpga: use FPGA as accelerator\n'
+			'\n'
+			'Usage: {} fpga COMMAND [OPTION]... KERNEL\n'
+			'\n'
+			'Where COMMAND may be:\n'
+			'   generate: generate a new experiment from the kernel source\n'
+			'       optional OPTIONs: -h, -s, -e, -f, -F, -m\n'
+			'       default subprocesses environment: lina ($CIR_LI_* variables)\n'
+			'   explore : perform design space exploration on an experiment\n'
+			'       optional OPTIONs: -h, -e, -m\n'
+			'       default subprocesses environment: lina ($CIR_LI_* variables)\n'
+			'   decide  : given an explored design space, decide the best point(s)\n'
+			'       optional OPTIONs: -h, -e, -m\n'
+			'       default subprocesses environment: vivado ($CIR_VI_* variables)\n'
+			'   synth   : synthesise the points selected with "decide"\n'
+			'       optional OPTIONs: -h, -e, -m, -k\n'
+			'       default subprocesses environment: vivado ($CIR_VI_* variables)\n'
+			'   expand  : expand a decided design point: apply some code transformations\n'
+			'       optional OPTIONs: -h, -e, -m, -k\n'
+			'       default subprocesses environment: vivado ($CIR_VI_* variables)\n'
+			'   verify  : execute synthesised points and verify their results\n'
+			'       optional OPTIONs: -h, -e, -m, -k\n'
+			'       default subprocesses environment: vivado ($CIR_VI_* variables)\n'
+			'   profile : execute a synthesised point, profile power and/or execution time\n'
+			'       (default is both)\n'
+			'       optional OPTIONs: -h, -e, -m, -k, -w, -x, -c, -r, -p, -i\n'
+			'       default subprocesses environment: vivado ($CIR_VI_* variables)\n'
+			'   collect : collect results from an experiment, save to the experiment database (path\n'
+			'       is $PWD/results/fpga/SRC/EXP*)\n'
+			'       optional OPTIONs: -h, -e, -f, -F, -d, -b, -g\n'
+			'       default subprocesses environment: none\n'
+			'   stat    : show information about an experiment\n'
+			'       optional OPTIONs: -h, -e\n'
+			'       default subprocesses environment: none\n'
+			'\n'
+			'Where OPTION may be:\n'
+			'    -h     , --help             : this message\n'
+			'    -s SRC , --source=SRC       : use SRC as the source for the experiment (default is\n'
+			'                                  "base", folder path is $PWD/sources/fpga/KERNEL/SRC)\n'
+			'    -e EXP , --experiment=EXP   : use EXP as the destination experiment (default is\n'
+			'                                  "default", folder path is\n'
+			'                                  $PWD/experiments/fpga/KERNEL/EXP)\n'
+			'    -f     , --force            : run COMMAND for this KERNEL EXP, even if it ran before\n'
+			'                                  already (will ask for confirmation though)\n'
+			'    -F     , --force-really     : run COMMAND for this KERNEL EXP, even if it ran\n'
+			'                                  before already (NO CONFIRMATION ASKED!!!!)\n'
+			'    -m MASK, --mask=MASK        : use MASK to select which variants of an experiment to\n'
+			'                                  perform the COMMAND. See the section "Exploration\n'
+			'                                  variants" below for more information and defaults. The\n'
+			'                                  default value is only used for the "generate" command.\n'
+			'                                  All other commands will iterate over all generated\n'
+			'                                  variants in the experiment if no "-m|--mask" is set\n'
+			'    -k KNOB, --knob=KNOB        : perform a post-exploration (actually post-decision)\n'
+			'                                  code transformation using knob KNOB. See the section\n'
+			'                                  "Post-decision code transformation" below for more\n'
+			'                                  information (default is 0)\n'
+			'    -w     , --power            : profile only power\n'
+			'    -x     , --exectime         : profile only execution time\n'
+			'    -c     , --cooldown=TIME    : wait TIME seconds before actually starting the profile\n'
+			'                                  (default is 0 seconds)\n'
+			'    -r RATE, --samplrate=RATE   : sampling rate (in ms) for power sampling (default is\n'
+			'                                  100 ms)\n'
+			'    -p     , --preserve         : preserve the power log file (it will be saved with the\n'
+			'                                  profiling timestamp)\n'
+			'    -i     , --skip-export      : if you use a bootable sdcard or any other medium/procedure\n'
+			'                                  that requires manual intervention when moving a\n'
+			'                                  project from this PC to the accelerator, you can skip this\n'
+			'                                  "exportation" step using this option. This is useful,\n'
+			'                                  for example, when several profiling runs should be\n'
+			'                                  performed using a same project (i.e. no need to transfer\n'
+			'                                  every time). This requires also support on the backend\n'
+			'                                  (i.e. your sources/scripts must implement this skip). This\n'
+			'                                  flag is automatically disabled if multiple variants are\n'
+			'                                  considered in a cirith execution, either by the "-m|--mask"\n'
+			'                                  argument or by iterating all variants in the experiment\n'
+			'    -d     , --delete           : delete result files $PWD/results/fpga/SRC/EXP* if they\n'
+			'                                  exist\n'
+			'    -b     , --backup           : if file $PWD/results/fpga/SRC/EXP.csv exists, it is\n'
+			'                                  compressed with all associated *.pmon files to a file\n'
+			'                                  named $PWD/results/fpga/SRC/EXP_backup_$TIMESTAMP.tar.gz,\n'
+			'                                  where $TIMESTAMP is the date timestamp of the first measure\n'
+			'                                  in this csv file. If support to tar and/or zlib is not\n'
+			'                                  installed, a folder with the same name will be generated\n'
+			'                                  instead. The new "collect" command is then executed on\n'
+			'                                  a clean CSV file\n'
+			'    -g     , --always-gen-backup: always generate a backup/file folder from the collected\n'
+			'                                  results. New backup file/folder will have a numerical\n'
+			'                                  index before the extension (e.g. "*-2.tar.gz")\n'
+			'\n'
+			'Environment variables: cirith uses custom environment variables to set up the paths\n'
+			'    to the tools like CUDA, Vivado, etc. These variables have as prefix CIR_XX_*, where\n'
+			'    XX is the prefix (midfix?) for a specific tool. Before running any command, cirith\n'
+			'    sets up different environments for each tool. Each CIR_XX_* variable replaces the\n'
+			'    respective variable without the suffix. For example, $CIR_XX_FOO will replace $FOO\n'
+			'    when environment for tool XX is selected. Supported tools for FPGA are:\n'
+			'        none                    : use the standard environment\n'
+			'        vivado                  : use the environment set by $CIR_VI_* variables\n'
+			'        lina                    : use the environment set by $CIR_LI_* variables\n'
+			'\n'
+			'    The default environment for each command is defined within each command\'s description\n'
+			'    description. You can force another environment by using the "environment=" option in\n'
+			'    your configuration file. For example:\n'
+			'        [generate]\n'
+			'        environment=cuda\n'
+			'\n'
+			'    HINT: One can use the "setenv.sh" script to set these variables. Check the script\'s\n'
+			'          content for further info!\n'
+			'\n'
+			'Exploration variants: to provide more flexibility in the explorations, cirith allows for each\n'
+			'    experiment to have different variants self-contained. Each variant usually consists of a\n'
+			'    small different setup in your design space exploration, for example enabling or disabling\n'
+			'    certain heuristics. One could argue that these could be considered optimisation knobs\n'
+			'    suitable for the design space exploration itself, however usually these setups that compose\n'
+			'    each variant are not intended to be explored for every kernel. With a robust DSE, only one\n'
+			'    variant might be enough. The remaining are useful for specific optimisations or analyses.\n'
+			'    This variant scheme is specific to each tool and must be implemented in cirith, or can also\n'
+			'    be disabled by providing support to just a single variant. Current supported variant schemes are:\n'
+			'        NONE: to be implemented (sorry...)\n'
+			'        LINA: bX.vY.kZ.pW, where:\n'
+			'                  bX: enable/disable on-chip buffering of all arrays. b0 is disabled, b1 is enabled\n'
+			'                  vY: enable/disable automatic vectorisation analysis. v0 is disabled, v1 is enabled\n'
+			'                  kZ: enable/disable DDR banking. k0 is disabled, k1 is enabled\n'
+			'                  pW: select Lina DDR scheduling policy. p0 is conservative, p1 is permissive\n'
+			'              For example to define a specific variant during cirith execution, use\n'
+			'              "-m|--mask=b0.v0.k1.p1". You can also select more than one. For example to select\n'
+			'              both banking policies, use "-m|--mask=b0.v0.k01.p1" (this means that both k0 and k1\n'
+			'              will be considered). Projects in cirith should be able to differentiate between\n'
+			'              variants, usually using different folders inside the experiment folder.\n'
+			'              Default value if no "-m" argument is supplied is: b0.v01.k1.p01\n'
+			'\n'
+			'   NOTE: You can use mask to select more than one variant to be manipulated on a single cirith\n'
+			'         run. However, these variants must exist (i.e. the set of variants you pass through "-m"\n'
+			'         when running any command other than "generate" and "collect" must be a sub-set of the\n'
+			'         set you used during the "generate" option). The "collect" command always iterates over\n'
+			'         all generated variants\n'
+			'\n'
+			'Post-decision code transformation: after executing "decide" for one or more variants of an\n'
+			'    experiment, you can proceed to directly synthesising the selected point. However, there might\n'
+			'    be some code manipulations that can improve final performance (e.g. by relaxing constraints of\n'
+			'    the HLS optimiser). You can activate these manipulations by using knobs. After running "decide",\n'
+			'    you can expand one or more variants using an integer knob ID. This knob ID is passed to the\n'
+			'    backend which your backend logic can use to implement different code manipulations. Each knob\n'
+			'    setup should be self-contained within a variant, at least with the files that communicates with\n'
+			'    cirith. In summary, an FPGA experiment is composed of one or more variants, and each variant is\n'
+			'    composed of one or more setups via knobs. You can only select a single knob at a time using\n'
+			'    the "-k" option. If no code manipulation is desired, use the default knob only. In fact if the\n'
+			'    "synth" command is executed right after "decide", the "expand" command will be automatically\n'
+			'    executed with the default knob value of 0. This is similar to running "decide", then "expand"\n'
+			'    with "-k|--knob=0" and then "synth" with "-k|--knob=0".'.format(appName)
+		)
+	
+		if printToError:
+			sys.stderr.write(usageStr + "\n")
+		else:
+			print(usageStr)
+
+
+class LinaSetupIterator:
+	def _toStr(elem):
+		if not isinstance(elem, tuple):
+			raise TypeError("Expected \"tuple\" type")
+
+		return "b{}.v{}.k{}.p{}".format(int(elem[0]), int(elem[1]), int(elem[2]), int(elem[3]))
+
+	def _toDict(elem):
+		if not isinstance(elem, tuple):
+			raise TypeError("Expected \"tuple\" type")
+
+		return {"buffer": elem[0], "vectorise": elem[1], "banking": elem[2], "policy": elem[3]}
+
+	def __init__(self, masks="b01.v01.k01.p01"):
+		self._masks = masks
+		self._possible = set()
+
+		for mask in masks.split(","):
+			maskParsed = {"buffer": set(), "vectorise": set(), "banking": set(), "policy": set()}
+
+			for tag in mask.split("."):
+				if 0 == len(tag):
+					continue
+
+				if "b" == tag[0]:
+					for elem in tag[1:]:
+						if elem not in "01":
+							raise ValueError("Invalid value received for Lina setup parameter \"buffer\" (b): {}".format(elem))
+
+						maskParsed["buffer"].add(int(elem))
+				elif "v" == tag[0]:
+					for elem in tag[1:]:
+						if elem not in "01":
+							raise ValueError("Invalid value received for Lina setup parameter \"vectorise\" (v): {}".format(elem))
+
+						maskParsed["vectorise"].add("1" == elem)
+				elif "k" == tag[0]:
+					for elem in tag[1:]:
+						if elem not in "01":
+							raise ValueError("Invalid value received for Lina setup parameter \"banking\" (k): {}".format(elem))
+
+						maskParsed["banking"].add("1" == elem)
+				elif "p" == tag[0]:
+					for elem in tag[1:]:
+						if elem not in "01":
+							raise ValueError("Invalid value received for Lina setup parameter \"policy\" (p): {}".format(elem))
+
+						maskParsed["policy"].add(int(elem))
+				else:
+					raise ValueError("Invalid tag parsed from Lina setup mask: {}".format(tag[0]))
+
+			for buffer in maskParsed["buffer"]:
+				for vectorise in maskParsed["vectorise"]:
+					for banking in maskParsed["banking"]:
+						for policy in maskParsed["policy"]:
+							# We unfortunately cannot create a set of dicts, because dicts are mutable, non-hashable
+							# set() requires hashable items. As a workaround, we use a simple tuple instead, and therefore
+							# position matters!
+							self._possible.add((buffer, vectorise, banking, policy))
+
+	def __str__(self):
+		return self._masks
+
+	def getIterable(self):
+		return [(LinaSetupIterator._toStr(x), LinaSetupIterator._toDict(x)) for x in self._possible]
+
+
+if "__main__" == __name__:
+	timeMultipliers = {
+		"s": 1000,
+		"ms": 1.0,
+		"us": 0.001,
+		"ns": 0.000001
+	}
+	energyMultipliers = {
+		"kJ": 1000000,
+		"J": 1000,
+		"mJ": 1.0,
+		"uJ": 0.001,
+		"nJ": 0.000001
+	}
+	supportedCommands = [
+		"fpga",
+		"help"
+	]
+	usages = Usages()
+	opts = []
+	args = []
+
+	if (len(sys.argv) < 2) or (sys.argv[1] not in supportedCommands):
+		printError(Errors.INVALID_COMMAND, usages.general, True)
+
+	# If $CIR_*_* env variables are set, we "import" them here 
+	envs = {
+		"none": os.environ,
+		"cuda": dict(os.environ),
+		"vivado": dict(os.environ),
+		"lina": dict(os.environ)
+	}
+	for key in envs["cuda"]:
+		if key.startswith("CIR_CU_"):
+			envs["cuda"][key[7:]] = envs["cuda"][key]
+	for key in envs["vivado"]:
+		if key.startswith("CIR_VI_"):
+			envs["vivado"][key[7:]] = envs["vivado"][key]
+	for key in envs["lina"]:
+		if key.startswith("CIR_LI_"):
+			envs["lina"][key[7:]] = envs["lina"][key]
+
+	if supportedCommands[0] == sys.argv[1]:
+		printWithTag("Selected FPGA\n")
+
+		supportedSubCommands = [
+			"generate",
+			"explore",
+			"decide",
+			"synth",
+			"expand",
+			"verify",
+			"profile",
+			"collect",
+			"stat",
+			"all",
+			"clean"
+		]
+		source = "base"
+		experiment = "default"
+		sourceSet = False
+		experimentSet = False
+		force = False
+		forceReally = False
+		linaSetups = LinaSetupIterator("b0.v01.k1.p01")
+		linaSetupsSet = False
+		knob = 0
+		knobSet = False
+		profExecTime = True
+		profPower = True
+		cooldownTime = 0
+		cooldownTimeSet = False
+		samplingRateMs = 100
+		samplingRateMsSet = False
+		preservePowerFile = False
+		skipExport = False
+		delete = False
+		backup = False
+		alwaysGenBackup = False
+
+		if (len(sys.argv) < 3) or (sys.argv[2] not in supportedSubCommands):
+			printError(Errors.INVALID_SUBCOMMAND, usages.fpga, True)
+
+		try:
+			opts, args = getopt.getopt(sys.argv[3:], "hs:e:fFm:k:wxc:r:pidbg",
+				[
+					"help", "source=", "experiment=", "force", "force-really",
+					"mask=", "knob=",
+					"power", "exectime", "cooldown=", "samplrate=", "preserve", "skip-export",
+					"delete", "backup", "always-gen-backup"
+				]
+			)
+		except getopt.GetoptError as err:
+			printError(Errors.GETOPT_ERROR, usages.fpga, True, str(err))
+
+		for o, a in opts:
+			if o in ("-s", "--source"):
+				source = a
+				sourceSet = True
+			elif o in ("-e", "--experiment"):
+				experiment = a
+				experimentSet = True
+			elif o in ("-f", "--force"):
+				force = True
+			elif o in ("-F", "--force-really"):
+				forceReally = True
+			elif o in ("-m", "--mask"):
+				linaSetups = LinaSetupIterator(a)
+				linaSetupsSet = True
+			elif o in ("-k", "--knob"):
+				knob = int(a)
+				knobSet = True
+			elif o in ("-w", "--power"):
+				profExecTime = False
+			elif o in ("-x", "--exectime"):
+				profPower = False
+			elif o in ("-c", "--cooldown"):
+				cooldownTime = int(a)
+				cooldownTimeSet = True
+			elif o in ("-r", "--samplrate"):
+				samplingRateMs = int(a)
+				samplingRateMsSet = True
+			elif o in ("-p", "--preserve"):
+				preservePowerFile = True
+			elif o in ("-i", "--skip-export"):
+				skipExport = True
+			elif o in ("-d", "--delete"):
+				delete = True
+			elif o in ("-b", "--backup"):
+				backup = True
+			elif o in ("-g", "--always-gen-backup"):
+				alwaysGenBackup = True
+			else:
+				usages.fpga()
+
+		if len(args) < 1:
+			printError(Errors.MISSING_ARGUMENT, usages.fpga, True, "KERNEL")
+		if force and forceReally:
+			printWarning(Warnings.CONFLICTING_PARAMETERS, "-f and -F. Ignoring -F for the sake of protection")
+		if not (profExecTime or profPower):
+			printError(Errors.CONFLICTING_PARAMETERS, usages.fpga, True, "-w and -x.")
+		if delete and backup:
+			printError(Errors.CONFLICTING_PARAMETERS, usages.fpga, True, "-d and -b.")
+
+		# Get default values for the selected kernel
+		globalCfgPath = os.path.join("etc", "configs", "fpga", args[0], "global.cfg")
+		cfg = None
+		if os.path.exists(globalCfgPath):
+			printWithTag("Found global.cfg file for kernel {}\n".format(args[0]))
+			cfg = configparser.ConfigParser()
+			cfg.read_file(open(globalCfgPath))
+
+			if "defaults" in cfg:
+				if not sourceSet and "source" in cfg["defaults"]:
+					source = cfg["defaults"]["source"]
+				if not experimentSet and "experiment" in cfg["defaults"]:
+					experiment = cfg["defaults"]["experiment"]
+		else:
+			printWarning(Warnings.GLOBAL_CFG_NOT_FOUND)
+
+		now = str(datetime.datetime.now()).replace(" ", "_").replace(":", "-")
+
+		if supportedSubCommands[0] == sys.argv[2]:
+			printWithTag("Selected \"generate\"\n")
+
+			if not sourceSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if not linaSetupsSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask={}".format(linaSetups))
+			if knobSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-k/--knob={}".format(knob))
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			sourcePath = os.path.join("sources", "fpga", args[0], source)
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			if not os.path.exists(sourcePath):
+				printError(Errors.SOURCE_NOT_FOUND, None, True, "source \"{}\" for kernel \"{}\"".format(source, args[0]))
+			if os.path.exists(experimentPath):
+				goAnyway = forceReally
+				if force:
+					if os.path.exists(os.path.join(experimentPath, ".generated")):
+						printWarnWithTag("[y/N] Experiment \"{}\" for kernel \"{}\" already generated. Remove experiment and start over? ".format(experiment, args[0]))
+					else:
+						printWarnWithTag("[y/N] Experiment \"{}\" for kernel \"{}\" already generated but \".generated\" file is missing (may be corrupt). Remove experiment and start over? ".format(experiment, args[0]))
+					goAnyway = "y" == input()
+
+				if goAnyway:
+					printWithTag("Removing experiment \"{}\" for kernel \"{}\" and starting over...\n".format(experiment, args[0]))
+					shutil.rmtree(experimentPath)
+					os.makedirs(experimentPath)
+				else:
+					printError(Errors.ABORTED, None, True, "experiment \"{}\" for kernel \"{}\" already exists".format(experiment, args[0]))
+			else:
+				os.makedirs(experimentPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Generating Lina setup \"{}\" (buffer scenario: {}, auto-vectorise: {}, DDR banking: {}, DDR policy: {})\n".format(
+					setup[0],
+					"all arrays are onchip" if 1 == setup[1]["buffer"] else "R/W arrays are onchip",
+					"enabled" if setup[1]["vectorise"] else "disabled",
+					"enabled" if setup[1]["banking"] else "disabled",
+					"permissive" if setup[1]["policy"] else "conservative"
+				))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				os.mkdir(setupPath)
+
+				replacedExecute = str(cfg["generate"]["execute"])
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0]),
+					("$(LBUFFER)", setup[1]["buffer"]),
+					("$(LVECTORISE)", int(setup[1]["vectorise"])),
+					("$(LBANKING)", int(setup[1]["banking"])),
+					("$(LPOLICY)", setup[1]["policy"])
+				]
+				for kword in replaces:
+					replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+				selEnv = envs["lina"] if "environment" not in cfg["generate"] else envs[cfg["generate"]["environment"]]
+
+				try:
+					for execLine in replacedExecute.split("\n"):
+						subprocess.run(shlex.split(execLine), check=True, env=selEnv)
+				except Exception as err:
+					printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+			with open(os.path.join(experimentPath, ".generated"), "w") as genF:
+				genF.write("{},{}\n".format(now, source))
+				genF.write("{}\n".format(linaSetups))
+
+			printWithTag("\"generate\" complete!\n")
+		elif supportedSubCommands[1] == sys.argv[2]:
+			printWithTag("Selected \"explore\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if forceReally:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-F/--force-really")
+			if knobSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-k/--knob={}".format(knob))
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				# If --mask is not set, use the full set of this experiment
+				if not linaSetupsSet:
+					linaSetups = LinaSetupIterator(readLines[1].strip())
+					printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask=<all Lina setups generated> (i.e. \"{}\")".format(linaSetups))
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Exploring Lina setup \"{}\" (buffer scenario: {}, auto-vectorise: {}, DDR banking: {}, DDR policy: {})\n".format(
+					setup[0],
+					"all arrays are onchip" if 1 == setup[1]["buffer"] else "R/W arrays are onchip",
+					"enabled" if setup[1]["vectorise"] else "disabled",
+					"enabled" if setup[1]["banking"] else "disabled",
+					"permissive" if setup[1]["policy"] else "conservative"
+				))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not os.path.exists(setupPath):
+					printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" of kernel \"{}\" does not contain setup \"{}\"".format(experiment, args[0], setup[0]))
+
+				replacedExecute = str(cfg["explore"]["execute"])
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0])
+				]
+				for kword in replaces:
+					replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+				replacedCwd = None
+				if "cwd" in cfg["explore"]:
+					replacedCwd = str(cfg["explore"]["cwd"])
+					for kword in replaces:
+						replacedCwd = replacedCwd.replace(kword[0], kword[1])
+				selEnv = envs["lina"] if "environment" not in cfg["explore"] else envs[cfg["explore"]["environment"]]
+
+				try:
+					for execLine in replacedExecute.split("\n"):
+						subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+				except Exception as err:
+					printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+				with open(os.path.join(setupPath, ".explored"), "w") as expF:
+					expF.write("{}\n".format(now))
+
+			printWithTag("\"explore\" complete!\n")
+		elif supportedSubCommands[2] == sys.argv[2]:
+			printWithTag("Selected \"decide\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if forceReally:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-F/--force-really")
+			if knobSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-k/--knob={}".format(knob))
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				# If --mask is not set, use the full set of this experiment
+				if not linaSetupsSet:
+					linaSetups = LinaSetupIterator(readLines[1].strip())
+					printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask=<all Lina setups generated> (i.e. \"{}\")".format(linaSetups))
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Deciding Lina setup \"{}\"\n".format(setup[0]))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not os.path.exists(setupPath):
+					printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" of kernel \"{}\" does not contain setup \"{}\"".format(experiment, args[0], setup[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".explored")):
+					printError(Errors.SETUP_NOT_EXPLORED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+
+				replacedExecute = str(cfg["decide"]["execute"])
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0])
+				]
+				for kword in replaces:
+					replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+				replacedCwd = None
+				if "cwd" in cfg["decide"]:
+					replacedCwd = str(cfg["decide"]["cwd"])
+					for kword in replaces:
+						replacedCwd = replacedCwd.replace(kword[0], kword[1])
+				selEnv = envs["vivado"] if "environment" not in cfg["decide"] else envs[cfg["decide"]["environment"]]
+
+				try:
+					for execLine in replacedExecute.split("\n"):
+						subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+				except Exception as err:
+					printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+				with open(os.path.join(setupPath, ".decided"), "w") as dcdF:
+					dcdF.write("{}\n".format(now))
+
+			printWithTag("\"decide\" complete!\n")
+		elif supportedSubCommands[3] == sys.argv[2]:
+			printWithTag("Selected \"synth\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if forceReally:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-F/--force-really")
+			if not knobSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-k/--knob={}".format(knob))
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				# If --mask is not set, use the full set of this experiment
+				if not linaSetupsSet:
+					linaSetups = LinaSetupIterator(readLines[1].strip())
+					printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask=<all Lina setups generated> (i.e. \"{}\")".format(linaSetups))
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Synthesising Lina setup \"{}\" with knob {}\n".format(setup[0], knob))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not os.path.exists(setupPath):
+					printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" of kernel \"{}\" does not contain setup \"{}\"".format(experiment, args[0], setup[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".explored")):
+					printError(Errors.SETUP_NOT_EXPLORED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".decided")):
+					printError(Errors.SETUP_NOT_DECIDED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+
+				# If knob is not defined, get from defaults (if available)
+				if not knobSet:
+					if "knob" in cfg["defaults"]:
+						knob = int(cfg["defaults"]["knob"])
+
+				knobDir = "knob{}".format(knob)
+				knobPath = os.path.join(setupPath, knobDir)
+
+				# Check if selected knob was already expanded (i.e. project was created)
+				if not os.path.exists(knobPath):
+					# Hacky boy you
+					printWarnWithTag("Decided project for knob {} was not yet expanded. Calling cirith to perform expansion\n".format(knob))
+					printWarnWithTag("-----------------------------------------------------------------------------------------\n")
+					try:
+						subprocess.run([*sys.argv[0:2], "expand", *sys.argv[3:]], check=True)
+					except Exception as err:
+						printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+					printWarnWithTag("-----------------------------------------------------------------------------------------\n")
+
+				replacedExecute = str(cfg["synth"]["execute"])
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0]),
+					("$(KNOB)", str(knob))
+				]
+				for kword in replaces:
+					replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+				replacedCwd = None
+				if "cwd" in cfg["synth"]:
+					replacedCwd = str(cfg["synth"]["cwd"])
+					for kword in replaces:
+						replacedCwd = replacedCwd.replace(kword[0], kword[1])
+				selEnv = envs["vivado"] if "environment" not in cfg["synth"] else envs[cfg["synth"]["environment"]]
+
+				try:
+					for execLine in replacedExecute.split("\n"):
+						subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+				except Exception as err:
+					printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+				with open(os.path.join(knobPath, ".synthd"), "w") as synF:
+					synF.write("{}\n".format(now))
+
+			printWithTag("\"synth\" complete!\n")
+		elif supportedSubCommands[4] == sys.argv[2]:
+			printWithTag("Selected \"expand\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if forceReally:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-F/--force-really")
+			if not knobSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-k/--knob={}".format(knob))
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				# If --mask is not set, use the full set of this experiment
+				if not linaSetupsSet:
+					linaSetups = LinaSetupIterator(readLines[1].strip())
+					printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask=<all Lina setups generated> (i.e. \"{}\")".format(linaSetups))
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Expanding Lina setup \"{}\" with knob {}\n".format(setup[0], knob))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not os.path.exists(setupPath):
+					printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" of kernel \"{}\" does not contain setup \"{}\"".format(experiment, args[0], setup[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".explored")):
+					printError(Errors.SETUP_NOT_EXPLORED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".decided")):
+					printError(Errors.SETUP_NOT_DECIDED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+
+				# If knob is not defined, get from defaults (if available)
+				if not knobSet:
+					if "knob" in cfg["defaults"]:
+						knob = int(cfg["defaults"]["knob"])
+
+				knobDir = "knob{}".format(knob)
+				knobPath = os.path.join(setupPath, knobDir)
+				os.mkdir(knobPath)
+
+				replacedExecute = str(cfg["expand"]["execute"])
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0]),
+					("$(KNOB)", str(knob))
+				]
+				for kword in replaces:
+					replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+				replacedCwd = None
+				if "cwd" in cfg["expand"]:
+					replacedCwd = str(cfg["expand"]["cwd"])
+					for kword in replaces:
+						replacedCwd = replacedCwd.replace(kword[0], kword[1])
+				selEnv = envs["vivado"] if "environment" not in cfg["expand"] else envs[cfg["expand"]["environment"]]
+
+				try:
+					for execLine in replacedExecute.split("\n"):
+						subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+				except Exception as err:
+					printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+			printWithTag("\"expand\" complete!\n")
+		elif supportedSubCommands[5] == sys.argv[2]:
+			printWithTag("Selected \"verify\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if forceReally:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-F/--force-really")
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if not knobSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-k/--knob={}".format(knob))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				# If --mask is not set, use the full set of this experiment
+				if not linaSetupsSet:
+					linaSetups = LinaSetupIterator(readLines[1].strip())
+					printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask=<all Lina setups generated> (i.e. \"{}\")".format(linaSetups))
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Verifying Lina setup \"{}\" with knob {}\n".format(setup[0], knob))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not os.path.exists(setupPath):
+					printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" of kernel \"{}\" does not contain setup \"{}\"".format(experiment, args[0], setup[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".explored")):
+					printError(Errors.SETUP_NOT_EXPLORED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".decided")):
+					printError(Errors.SETUP_NOT_DECIDED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+
+				# If knob is not defined, get from defaults (if available)
+				if not knobSet:
+					if "knob" in cfg["defaults"]:
+						knob = int(cfg["defaults"]["knob"])
+
+				knobDir = "knob{}".format(knob)
+				knobPath = os.path.join(setupPath, knobDir)
+
+				if not os.path.exists(knobPath):
+					printError(Errors.KNOB_PROJECT_NOT_FOUND, None, True, "knob \"{}\" not found: experiment \"{}\", kernel \"{}\", setup \"{}\"".format(knob, experiment, args[0], setup[0]))
+
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0]),
+					("$(KNOB)", str(knob))
+				]
+				replacedExecute = str(cfg["verify"]["execute"])
+				for kword in replaces:
+					replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+				replacedCwd = None
+				if "cwd" in cfg["verify"]:
+					replacedCwd = str(cfg["verify"]["cwd"])
+					for kword in replaces:
+						replacedCwd = replacedCwd.replace(kword[0], kword[1])
+				selEnv = envs["vivado"] if "environment" not in cfg["verify"] else envs[cfg["verify"]["environment"]]
+
+				try:
+					for execLine in replacedExecute.split("\n"):
+						subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+				except Exception as err:
+					printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+				if not os.path.exists(os.path.join(knobPath, ".tmp")):
+					printError(Errors.VERIFY_FAILED, None, True)
+
+				with open(os.path.join(knobPath, ".tmp")) as tmpF:
+					if tmpF.read().strip() != "Pass":
+						printWithTag("\"verify\" result: FAIL\n")
+					else:
+						printWithTag("\"verify\" result: PASS\n")
+				os.remove(os.path.join(knobPath, ".tmp"))
+
+			printWithTag("\"verify\" complete!\n")
+		elif supportedSubCommands[6] == sys.argv[2]:
+			printWithTag("Selected \"profile\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if forceReally:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-F/--force-really")
+			if not cooldownTimeSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-c/--cooldown={}".format(cooldownTime))
+			if not samplingRateMsSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-r/--samplrate={}".format(samplingRateMs))
+			if not knobSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-k/--knob={}".format(knob))
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				# If --mask is not set, use the full set of this experiment
+				if not linaSetupsSet:
+					linaSetups = LinaSetupIterator(readLines[1].strip())
+					printWarning(Warnings.USING_DEFAULT_VALUE, "-m/--mask=<all Lina setups generated> (i.e. \"{}\")".format(linaSetups))
+
+			# Disable "-i" if multiple variants are considered. After all, how can one guarantee that all variants will point to a same
+			# generated design?
+			if len(linaSetups.getIterable()) > 1:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export, since multiple variants are considered in this execution")
+				skipExport = False
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			for setup in linaSetups.getIterable():
+				printWithTag("Profiling Lina setup \"{}\" with knob {}\n".format(setup[0], knob))
+
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not os.path.exists(setupPath):
+					printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" of kernel \"{}\" does not contain setup \"{}\"".format(experiment, args[0], setup[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".explored")):
+					printError(Errors.SETUP_NOT_EXPLORED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+				elif not os.path.exists(os.path.join(setupPath, ".decided")):
+					printError(Errors.SETUP_NOT_DECIDED, None, True, "setup \"{}\", experiment \"{}\" for kernel \"{}\"".format(setup[0], experiment, args[0]))
+
+				# If knob is not defined, get from defaults (if available)
+				if not knobSet:
+					if "knob" in cfg["defaults"]:
+						knob = int(cfg["defaults"]["knob"])
+
+				knobDir = "knob{}".format(knob)
+				knobPath = os.path.join(setupPath, knobDir)
+
+				if not os.path.exists(knobPath):
+					printError(Errors.KNOB_PROJECT_NOT_FOUND, None, True, "knob \"{}\" not found: experiment \"{}\", kernel \"{}\", setup \"{}\"".format(knob, experiment, args[0], setup[0]))
+
+				replaces = [
+					("$(KERNEL)", args[0]),
+					("$(SRC)", source),
+					("$(EXP)", experiment),
+					("$(ROOTD)", os.getcwd()),
+					("$(TIMESTAMP)", now),
+					("$(LSETUP)", setup[0]),
+					("$(KNOB)", str(knob)),
+					("$(COOLDOWN)", str(cooldownTime)),
+					("$(SAMPLRATE)", str(samplingRateMs)),
+					("$(SKIPEXPORT)", "1" if skipExport else "0")
+				]
+
+				# XXX profPower and profExecTime are inverted here. This seems irrelevant,
+				# however it helps us a lot since we do not actually have an execute-time
+				# approach for the zcu104
+
+				if profPower:
+					printWithTag("Will now profile for power\n")
+
+					replacedExecute = str(cfg["execute-power"]["execute"])
+					for kword in replaces:
+						replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+					replacedCwd = None
+					if "cwd" in cfg["execute-power"]:
+						replacedCwd = str(cfg["execute-power"]["cwd"])
+						for kword in replaces:
+							replacedCwd = replacedCwd.replace(kword[0], kword[1])
+					selEnv = envs["vivado"] if "environment" not in cfg["execute-power"] else envs[cfg["execute-power"]["environment"]]
+
+					try:
+						for execLine in replacedExecute.split("\n"):
+							subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+					except Exception as err:
+						printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+					if not os.path.exists(os.path.join(knobPath, ".tmp")):
+						printError(Errors.PROFILE_FAILED, None, True)
+
+					energyUnit = "mJ" if "energy-unit" not in cfg["execute-power"] else cfg["execute-power"]["energy-unit"]
+					execTimeUnit = "s" if "time-unit" not in cfg["execute-power"] else cfg["execute-power"]["time-unit"]
+					with open(os.path.join(knobPath, ".tmp")) as tmpF, open(os.path.join(knobPath, ".energies"), "a") as energiesF:
+						energy = float(tmpF.readline().strip())
+						execTime = float(tmpF.readline().strip())
+						tsBefore = float(tmpF.readline().strip())
+						tsAfter = float(tmpF.readline().strip())
+						energiesF.write("{},{:.3f},{:.3f},{:.3f},{:.3f}\n".format(
+							now, energy * energyMultipliers[energyUnit], execTime * timeMultipliers[execTimeUnit],
+							tsBefore * timeMultipliers[execTimeUnit], tsAfter * timeMultipliers[execTimeUnit]
+						))
+
+					if not preservePowerFile:
+						os.remove(os.path.join(knobPath, "{}.pmon".format(now)))
+
+					os.remove(os.path.join(knobPath, ".tmp"))
+				else:
+					printWithTag("Power profiling skipped\n")
+
+				if profExecTime:
+					printWithTag("Will now profile for execution time\n")
+
+					replacedExecute = str(cfg["execute-time"]["execute"])
+					for kword in replaces:
+						replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+					replacedCwd = None
+					if "cwd" in cfg["execute-time"]:
+						replacedCwd = str(cfg["execute-time"]["cwd"])
+						for kword in replaces:
+							replacedCwd = replacedCwd.replace(kword[0], kword[1])
+					selEnv = envs["vivado"] if "environment" not in cfg["execute-time"] else envs[cfg["execute-time"]["environment"]]
+
+					try:
+						for execLine in replacedExecute.split("\n"):
+							subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+					except Exception as err:
+						printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+
+					if not os.path.exists(os.path.join(knobPath, ".tmp")):
+						printError(Errors.PROFILE_FAILED, None, True)
+
+					execTimeUnit = "s" if "time-unit" not in cfg["execute-time"] else cfg["execute-time"]["time-unit"]
+					with open(os.path.join(knobPath, ".tmp")) as tmpF, open(os.path.join(knobPath, ".exectimes"), "a") as execTimesF:
+						execTime = float(tmpF.read().strip())
+						execTimesF.write("{},{:.3f}\n".format(now, execTime * timeMultipliers[execTimeUnit]))
+
+					os.remove(os.path.join(knobPath, ".tmp"))
+				else:
+					printWithTag("Execution time profiling skipped\n")
+
+			printWithTag("\"profile\" complete!\n")
+		elif supportedSubCommands[7] == sys.argv[2]:
+			printWithTag("Selected \"collect\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if linaSetupsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-m/--mask={}".format(linaSetups))
+			if knobSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-k/--knob={}".format(knob))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				linaSetups = LinaSetupIterator(readLines[1].strip())
+
+			db = {}
+			knobsInDB = []
+			# During collect, we iterate over all possible variants (setups) and knobs
+			for setup in linaSetups.getIterable():
+				setupPath = os.path.join(experimentPath, setup[0])
+				if not (os.path.exists(setupPath) and os.path.exists(os.path.join(setupPath, ".explored")) and os.path.exists(os.path.join(setupPath, ".decided"))):
+					printWarning(Warnings.COLLECT_MISSING, "setup \"{}\"".format(setup[0]))
+					continue
+
+				for knob in range(MAX_KNOB_RANGE):
+					knobDir = "knob{}".format(knob)
+					knobPath = os.path.join(setupPath, knobDir)
+					knobUID = "{}-{}".format(setup[0], knob)
+
+					if not os.path.exists(knobPath):
+						printWarning(Warnings.COLLECT_MISSING, "setup \"{}\", knob {}".format(setup[0], knob))
+						continue
+
+					wasProfiled = False
+					if os.path.exists(os.path.join(knobPath, ".exectimes")):
+						wasProfiled = True
+						with open(os.path.join(knobPath, ".exectimes")) as execTimesF:
+							for line in execTimesF.readlines():
+								lineSplit = line.strip().split(",")
+								if lineSplit[0] not in db:
+									db[lineSplit[0]] = {}
+								if knobUID not in db[lineSplit[0]]:
+									db[lineSplit[0]][knobUID] = {}
+								db[lineSplit[0]][knobUID]["exectime-ms"] = lineSplit[1]
+					if os.path.exists(os.path.join(knobPath, ".energies")):
+						wasProfiled = True
+						with open(os.path.join(knobPath, ".energies")) as energiesF:
+							for line in energiesF.readlines():
+								lineSplit = line.strip().split(",")
+								if lineSplit[0] not in db:
+									db[lineSplit[0]] = {}
+								if knobUID not in db[lineSplit[0]]:
+									db[lineSplit[0]][knobUID] = {}
+								db[lineSplit[0]][knobUID]["energy-mj"] = lineSplit[1]
+								db[lineSplit[0]][knobUID]["energy-msmt-exectime-ms"] = lineSplit[2]
+								db[lineSplit[0]][knobUID]["energy-tstamp-before-ms"] = lineSplit[3]
+								db[lineSplit[0]][knobUID]["energy-tstamp-after-ms"] = lineSplit[4]
+
+					if wasProfiled:
+						if knobUID not in knobsInDB:
+							knobsInDB.append(knobUID)
+					else:
+						printWarning(Warnings.COLLECT_MISSING, "setup \"{}\", knob {}".format(setup[0], knob))
+
+			if 0 == len(db):
+				printError(Errors.PROFILE_FILES_NOT_FOUND, None, True, "did you run the \"profile\" command?")
+
+			firstTimestamp = None
+			knobsInCSV = []
+			csvLines = None
+			csvPath = os.path.join("results", "fpga", args[0], source, "{}.csv".format(experiment))
+			if os.path.exists(csvPath):
+				with open(csvPath, "r") as csvF:
+					csvLines = csvF.readlines()
+
+					firstLineSplit = csvLines[0].strip().split(",")
+					for elem in firstLineSplit[1:]:
+						knobUID = elem[(elem.index("(")+1):elem.index(")")]
+						if knobUID not in knobsInCSV:
+							knobsInCSV.append(knobUID)
+
+					firstTimestamp = csvLines[1].strip().split(",")[0]
+
+					for line in csvLines[1:]:
+						timestamp = line.strip().split(",")[0]
+						if (not (backup or delete)) and timestamp in db:
+							printError(Errors.CSV_DUPLICATE_ENTRIES, None, True, "timestamp \"{}\" on file \"{}\"".format(timestamp, csvPath))
+
+				if backup:
+					if firstTimestamp is None:
+						printError(Errors.CSV_FILE_EMPTY, None, True, csvPath)
+
+					with tempfile.TemporaryDirectory(prefix="cirithXXXXXX") as tmpDir:
+						if tarfile is None:
+							finalPath = os.path.join("results", "fpga", args[0], source, "{}_backup_{}".format(experiment, firstTimestamp))
+							if os.path.exists(finalPath):
+								if alwaysGenBackup:
+									counter = 1
+									while True:
+										tmpFinalPath = os.path.join("results", "fpga", args[0], source, "{}_backup_{}-{}".format(experiment, firstTimestamp, counter))
+										if not os.path.exists(tmpFinalPath):
+											finalPath = tmpFinalPath
+											break
+										counter += 1
+									printWarning(Warnings.CSV_BACKUP_ALREADY_EXISTS, finalPath)
+								else:
+									printError(Errors.CSV_BACKUP_ALREADY_EXISTS, None, True, finalPath)
+
+							tmpFinalPath = os.path.join(tmpDir, "{}_backup_{}".format(experiment, firstTimestamp))
+							printWarning(Warnings.BACKUP_LIBS_NOT_FOUND, finalPath)
+
+							os.mkdir(tmpFinalPath)
+							tmpCsvPath = os.path.join(tmpFinalPath, "{}.csv".format(experiment))
+							shutil.copy2(csvPath, tmpFinalPath)
+							printWithTag("File \"{}\" added\n".format(csvPath))
+
+							pmonsFolder = os.path.join("results", "fpga", args[0], source, "{}_pmons".format(experiment))
+							if os.path.exists(pmonsFolder):
+								tmpPmonsFolder = os.path.join(tmpFinalPath, "{}_pmons".format(experiment))
+								shutil.copytree(pmonsFolder, tmpPmonsFolder)
+								printWithTag("Folder with pmons file \"{}_pmons\" added\n".format(experiment))
+
+							shutil.copytree(tmpFinalPath, finalPath)
+							printWithTag("Backup folder \"{}\" created successfuly\n".format(finalPath))
+						else:
+							finalPath = os.path.join("results", "fpga", args[0], source, "{}_backup_{}.tar.gz".format(experiment, firstTimestamp))
+							if os.path.exists(finalPath):
+								if alwaysGenBackup:
+									counter = 1
+									while True:
+										tmpFinalPath = os.path.join("results", "fpga", args[0], source, "{}_backup_{}-{}.tar.gz".format(experiment, firstTimestamp, counter))
+										if not os.path.exists(tmpFinalPath):
+											finalPath = tmpFinalPath
+											break
+										counter += 1
+									printWarning(Warnings.CSV_BACKUP_ALREADY_EXISTS, finalPath)
+								else:
+									printError(Errors.CSV_BACKUP_ALREADY_EXISTS, None, True, finalPath)
+
+							tmpFinalPath = os.path.join(tmpDir, os.path.basename(finalPath))
+							printWithTag("Generating compressed backup file \"{}\"\n".format(finalPath))
+
+							with tarfile.open(tmpFinalPath, "w:gz") as tgzFile:
+								tgzFile.add(csvPath, arcname=os.path.basename(csvPath))
+								printWithTag("File \"{}\" added\n".format(csvPath))
+
+								pmonsFolder = os.path.join("results", "fpga", args[0], source, "{}_pmons".format(experiment))
+								if os.path.exists(pmonsFolder):
+									tgzFile.add(pmonsFolder, arcname=os.path.basename(pmonsFolder))
+									printWithTag("Folder with pmons file \"{}_pmons\" added\n".format(experiment))
+
+							shutil.copy2(tmpFinalPath, finalPath)
+							printWithTag("Backup file \"{}\" created successfuly\n".format(finalPath))
+
+						printWithTag("Now removing backup'ed files...\n")
+						os.remove(csvPath)
+						pmonsFolder = os.path.join("results", "fpga", args[0], source, "{}_pmons".format(experiment))
+						if os.path.exists(pmonsFolder):
+							shutil.rmtree(pmonsFolder)
+						# Reset variables!
+						csvLines = None
+						knobsInCSV = []
+						firstTimestamp = None
+				elif delete:
+					doDelete = forceReally
+
+					if not doDelete:
+						printWarnWithTag("[y/N] File \"{}\" exists. Delete it (and its associated *.pmon files)? ".format(csvPath))
+						doDelete = "y" == input()
+
+					if doDelete:
+						printWithTag("Deleting file \"{}\" and all its associated *.pmon files...\n".format(csvPath))
+						os.remove(csvPath)
+						pmonsFolder = os.path.join("results", "fpga", args[0], source, "{}_pmons".format(experiment))
+						if os.path.exists(pmonsFolder):
+							shutil.rmtree(pmonsFolder)
+						# Reset variables!
+						csvLines = None
+						knobsInCSV = []
+						firstTimestamp = None
+					else:
+						printError(Errors.ABORTED, None, True, "file \"{}\" exists".format(csvPath))
+
+			os.makedirs(os.path.join("results", "fpga", args[0], source), exist_ok=True)
+
+			# Check which variant-knobs are not in the csv already, and rewrite the csv file including these columns
+			knobsToInclude = [x for x in knobsInDB if x not in knobsInCSV]
+			knobsInCSV2 = [*knobsInCSV, *knobsToInclude]
+			with open(csvPath, "w") as csvF:
+				# File was empty
+				if csvLines is None:
+					csvF.write("timestamp")
+					for knobUID in knobsInCSV2:
+						csvF.write((
+							",({0})-exectime-ms"
+							",({0})-energy-mj"
+							",({0})-energy-msmt-exectime-ms"
+							",({0})-energy-tstamp-before-ms"
+							",({0})-energy-tstamp-after-ms".format(knobUID)
+						))
+					csvF.write("\n")
+				else:
+					# Expand each existing line
+					csvF.write(csvLines[0].rstrip())
+					for knobUID in knobsToInclude:
+						printWithTag("Column \"{}\" did not exist on the CSV file. adding to all elements...\n".format(knobUID))
+						csvF.write((
+							",({0})-exectime-ms"
+							",({0})-energy-mj"
+							",({0})-energy-msmt-exectime-ms"
+							",({0})-energy-tstamp-before-ms"
+							",({0})-energy-tstamp-after-ms".format(knobUID)
+						))
+					csvF.write("\n")
+					for line in csvLines[1:]:
+						csvF.write(line.rstrip())
+						csvF.write(",---" * (5 * len(knobsToInclude)))
+						csvF.write("\n")
+
+				for elem in db:
+					csvF.write(elem)
+					for knobUID in knobsInCSV2:
+						knobUIDSplit = knobUID.split("-")
+
+						if knobUID in db[elem]:
+							csvF.write(",{},{},{},{},{}".format(
+								db[elem][knobUID]["exectime-ms"] if "exectime-ms" in db[elem][knobUID] else "---",
+								db[elem][knobUID]["energy-mj"] if "energy-mj" in db[elem][knobUID] else "---",
+								db[elem][knobUID]["energy-msmt-exectime-ms"] if "energy-msmt-exectime-ms" in db[elem][knobUID] else "---",
+								db[elem][knobUID]["energy-tstamp-before-ms"] if "energy-tstamp-before-ms" in db[elem][knobUID] else "---",
+								db[elem][knobUID]["energy-tstamp-after-ms"] if "energy-tstamp-after-ms" in db[elem][knobUID] else "---"
+							))
+
+							pmonPath = os.path.join(experimentPath, knobUIDSplit[0], "knob{}".format(knobUIDSplit[1]), "{}.pmon".format(elem))
+							if os.path.exists(pmonPath):
+								pmonsFolder = os.path.join("results", "fpga", args[0], source, "{}_pmons".format(experiment), knobUID)
+								os.makedirs(pmonsFolder, exist_ok=True)
+								dstPmonPath = os.path.join("results", "fpga", args[0], source, "{}_pmons".format(experiment), knobUID, os.path.basename(pmonPath))
+								shutil.copy2(pmonPath, dstPmonPath)
+						else:
+							csvF.write(",---,---,---,---,---")
+					csvF.write("\n")
+
+			printWithTag("\"collect\" complete!\n")
+		elif supportedSubCommands[8] == sys.argv[2]:
+			printWithTag("Selected \"stat\"\n")
+
+			if sourceSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-s/--source={}".format(source))
+			if not experimentSet:
+				printWarning(Warnings.USING_DEFAULT_VALUE, "-e/--experiment={}".format(experiment))
+			if force:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-f/--force")
+			if not profExecTime:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-w/--power")
+			if not profPower:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-x/--exectime")
+			if cooldownTimeSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-c/--cooldown={}".format(cooldownTime))
+			if samplingRateMsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-r/--samplrate={}".format(samplingRateMs))
+			if linaSetupsSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-m/--mask={}".format(linaSetups))
+			if knobSet:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-k/--knob={}".format(knob))
+			if preservePowerFile:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-p/--preserve")
+			if skipExport:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-i/--skip-export")
+			if delete:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-d/--delete")
+			if backup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-b/--backup")
+			if alwaysGenBackup:
+				printWarning(Warnings.IGNORING_ARGUMENT, "-g/--always-gen-backup")
+
+			experimentPath = os.path.join("experiments", "fpga", args[0], experiment)
+
+			if not os.path.exists(experimentPath):
+				printError(Errors.EXPERIMENT_NOT_FOUND, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+			elif not os.path.exists(os.path.join(experimentPath, ".generated")):
+				printError(Errors.EXPERIMENT_NOT_FULLY_GENERATED, None, True, "experiment \"{}\" for kernel \"{}\"".format(experiment, args[0]))
+
+			with open(os.path.join(experimentPath, ".generated")) as genF:
+				readLines = genF.readlines()
+				source = readLines[0].strip().split(",")[1]
+				linaSetups = LinaSetupIterator(readLines[1].strip())
+
+			sourceCfgPath = os.path.join("etc", "configs", "fpga", args[0], "{}.cfg".format(source))
+			if not os.path.exists(sourceCfgPath):
+				printWarning(Warnings.SOURCE_CONFIG_NOT_FOUND)
+			else:
+				cfg.read(sourceCfgPath)
+
+			# During stat, we iterate over all possible variants (setups) and knobs
+			for setup in linaSetups.getIterable():
+				setupPath = os.path.join(experimentPath, setup[0])
+
+				printWarnWithTag("-----------------------------------------------------------------------------------------\n")
+				printWarnWithTag("-----------------------------------------------------------------------------------------\n")
+				printWithTag("Lina setup \"{}\" (buffer scenario: {}, auto-vectorise: {}, DDR banking: {}, DDR policy: {})\n".format(
+					setup[0],
+					"all arrays are onchip" if 1 == setup[1]["buffer"] else "R/W arrays are onchip",
+					"enabled" if setup[1]["vectorise"] else "disabled",
+					"enabled" if setup[1]["banking"] else "disabled",
+					"permissive" if setup[1]["policy"] else "conservative"
+				))
+				for knob in range(MAX_KNOB_RANGE):
+					knobDir = "knob{}".format(knob)
+					knobPath = os.path.join(setupPath, knobDir)
+
+					if not os.path.exists(knobPath):
+						continue
+
+					printWithTag("-----------------------------------------------------------------------------------------\n")
+					printWithTag("KNOB ID {}\n".format(knob))
+
+					wasProfiled = False
+					if os.path.exists(os.path.join(knobPath, ".exectimes")):
+						wasProfiled = True
+						with open(os.path.join(knobPath, ".exectimes")) as execTimesF:
+							lineSplit = execTimesF.readlines()[-1].strip().split(",")
+							printWithTag("Last profiled execution time (ms): {}\n".format(lineSplit[1]))
+					if os.path.exists(os.path.join(knobPath, ".energies")):
+						wasProfiled = True
+						with open(os.path.join(knobPath, ".energies")) as energiesF:
+							lineSplit = energiesF.readlines()[-1].strip().split(",")
+							printWithTag("Last power profiling result (mJ): {}\n".format(lineSplit[1]))
+							printWithTag("Last profiled execution time during power profiling (ms): {}\n".format(lineSplit[2]))
+							printWithTag("Power profiling start timestamp (ms): {}\n".format(lineSplit[3]))
+							printWithTag("Power profiling end timestamp (ms): {}\n".format(lineSplit[4]))
+
+					if not wasProfiled:
+						printWithTag("No profile results found\n")
+
+					replaces = [
+						("$(KERNEL)", args[0]),
+						("$(SRC)", source),
+						("$(EXP)", experiment),
+						("$(ROOTD)", os.getcwd()),
+						("$(TIMESTAMP)", now),
+						("$(LSETUP)", setup[0]),
+						("$(KNOB)", str(knob))
+					]
+
+					printWithTag("Specific stat report from backend:\n")
+
+					replacedExecute = str(cfg["stat"]["execute"])
+					for kword in replaces:
+						replacedExecute = replacedExecute.replace(kword[0], "\"{}\"".format(kword[1]))
+					replacedCwd = None
+					if "cwd" in cfg["stat"]:
+						replacedCwd = str(cfg["stat"]["cwd"])
+						for kword in replaces:
+							replacedCwd = replacedCwd.replace(kword[0], kword[1])
+					selEnv = envs["none"] if "environment" not in cfg["stat"] else envs[cfg["stat"]["environment"]]
+
+					try:
+						for execLine in replacedExecute.split("\n"):
+							subprocess.run(shlex.split(execLine), check=True, cwd=replacedCwd, env=selEnv)
+					except Exception as err:
+						printError(Errors.EXTERNAL_ERROR, None, True, None, [(1, str(err))])
+					printWithTag("-----------------------------------------------------------------------------------------\n")
+
+			printWithTag("\"stat\" complete!\n")
+	else:
+		try:
+			opts, args = getopt.getopt(sys.argv[2:], "h", ["help"])
+		except getopt.GetoptError as err:
+			printError(Errors.GETOPT_ERROR, usages.help, True, str(err))
+
+		if (len(opts) > 0) and (opts[0][0] in ("-h", "--help")):
+			usages.help()
+		else:
+			usages.general()

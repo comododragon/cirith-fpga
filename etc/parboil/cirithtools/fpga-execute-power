@@ -1,0 +1,68 @@
+#!/bin/bash
+
+set -e
+
+if [ $# -ne 6 ]; then
+	echo "Usage: $0 TIMESTAMP KERNEL SKIPEXPORT DATASET COOLDOWN RATE" >&2
+	exit -1
+fi
+
+if [ $5 -gt 0 ]; then
+	echo "Error: \$(COOLDOWN) > 0 not implemented for this platform" >&2
+	exit -2
+fi
+
+if [ 1 -eq $3 ]; then
+	echo "[fpga-execute-power] \$(SKIPEXPORT) is 1, will not export content to sdcard (assuming that the board already has the right content loaded)"
+	echo "[fpga-execute-power] Skipping to zynprof..."
+else
+	echo -n "[fpga-execute-power] Please take your moment now to insert the sdcard on this PC and mount. Then, press ENTER to continue... "
+	read INPUT
+
+	# If $ZYN_SDMNTPATH is not set, try to find it out
+	if [ -z $ZYN_SDMNTPATH ]; then
+		ZYN_SDMNTPATH=$(cat /proc/mounts | grep /dev/mmcblk0p1 | cut -d ' ' -f 2)
+		# Still nothing? Give up then...
+		if [ -z $ZYN_SDMNTPATH ]; then
+			echo "Error: \$ZYN_SDMNTPATH is not set, and no mountpoint was found for /dev/mmcblk0p1 (standard value)" >&2
+			echo "       Please either set \$ZYN_SDMNTPATH, or check your sdcard mountpoint" >&2
+			exit -3
+		else
+			echo "[fpga-execute-power] \$ZYN_SDMNTPATH is not set. Will consider the first partition of mmcblk0: $ZYN_SDMNTPATH"
+		fi
+	fi
+
+	# Check for $ZYN_SDMNTPATH/.allowed
+	if [ ! -e "$ZYN_SDMNTPATH/.allowed" ]; then
+		echo "WARNING: the make command will expect the file \"$ZYN_SDMNTPATH/.allowed\" to be generated" >&2
+		echo "         This authorises the benchmark content to be copied to $ZYN_SDMNTPATH with overwrite" >&2
+		echo "         potential. If such file is not found, the make command will fail (and potentially" >&2
+		echo "         your cirith run). This file must be created only once per sdcard (or if you delete" >&2
+		echo "         the file)" >&2
+		echo -n "Create the \"$ZYN_SDMNTPATH/.allowed\" file? [y/N] " >&2
+		read INPUT
+
+		if [ "y" == "$INPUT" ]; then
+			touch "$ZYN_SDMNTPATH/.allowed"
+		else
+			echo "[fpga-execute-power] The .allowed file was not generated. Good luck!" >&2
+		fi
+	fi
+
+	echo "[fpga-execute-power] Will now export to sdcard"
+	make DATASET=$4 SDMNTPATH=$ZYN_SDMNTPATH export 
+fi
+
+echo -n "[fpga-execute-power] Please take your moment now to insert the sdcard on the FPGA board. Then, press ENTER to continue... "
+read INPUT
+
+echo "[fpga-execute-power] Will now start zynprof"
+./zynprof -r $6 -f $1.pmon -F .tmp2 -x parboil -B $ZYN_ZYNBAUD -b $ZYN_ARDBAUD $ZYN_ZYNTTY $ZYN_ARDTTY
+./zyncalc $1.pmon .tmp2 2>&1 | tee .tmp3
+readarray -t TIMESTAMPS < <(sed -n "/\[ZynCalc\] INFO: .\+ (calibrated)/p" .tmp3 | sed "s/\[ZynCalc\] INFO: .\+, \([0-9]\+\) us (calibrated)/\1/")
+sed -n "/\[ZynCalc\] INFO:     Sampled energy consumption: /p" .tmp3 | sed "s/\[ZynCalc\] INFO:     Sampled energy consumption: \([0-9\.]\+\) mJ/\1/" > .tmp
+echo $((${TIMESTAMPS[1]} - ${TIMESTAMPS[0]})) >> .tmp
+echo ${TIMESTAMPS[0]} >> .tmp
+echo ${TIMESTAMPS[1]} >> .tmp
+
+echo "[fpga-execute-power] You can now safely turn off the FPGA board"

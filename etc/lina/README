@@ -1,0 +1,8 @@
+Insert lina toolchain here! I.e. download the install script:
+
+If using latest version with Lina Daemon (linad):
+	- https://raw.githubusercontent.com/comododragon/linaii/cachedaemon/misc/compiler.sh
+If using original version without Lina Daemon:
+	- https://raw.githubusercontent.com/comododragon/linaii/master/misc/compiler.sh
+
+And execute it in this folder.

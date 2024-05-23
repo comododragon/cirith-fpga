@@ -1,0 +1,7 @@
+{
+	"makefile": ["Makefile", "benchmarks/mri_q/src/sdx_zcu104/Makefile", "benchmarks/mri_q/src/sdx_zcu104/hls_hook.tcl"],
+	"clsource": "benchmarks/mri_q/src/sdx_zcu104/mri_q.cl",
+	"patches": {
+		"en-expl-unroll-writeback-loops": true
+	}
+}

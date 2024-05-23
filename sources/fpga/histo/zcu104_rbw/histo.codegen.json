@@ -1,0 +1,10 @@
+{
+	"makefile": ["Makefile", "benchmarks/histo/src/sdx_zcu104/Makefile", "benchmarks/histo/src/sdx_zcu104/hls_hook.tcl"],
+	"clsource": "benchmarks/histo/src/sdx_zcu104/histo.cl",
+	"autorbw": {
+		"incr": 1
+	},
+	"patches": {
+		"en-expl-unroll-writeback-loops": true
+	}
+}

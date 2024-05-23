@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+
+
+import sys
+from PIL import Image
+
+
+eps = 10
+threshold = 0.1
+
+
+if "__main__" == __name__:
+	if len(sys.argv) != 3:
+		sys.stderr.write("Usage: {} FILE1 FILE2\n".format(sys.argv[0]))
+		exit(-1)
+
+	errCount = 0
+
+	with Image.open(sys.argv[1]) as img1, Image.open(sys.argv[2]) as img2:
+		rgbImg1 = img1.convert("RGB")
+		rgbImg2 = img2.convert("RGB")
+
+		if rgbImg1.size != rgbImg2.size:
+			print("Mismatch")
+			exit(-2)
+
+		for x in range(rgbImg1.size[0]):
+			for y in range(rgbImg1.size[1]):
+				if abs(rgbImg1.getpixel((x, y))[0] - rgbImg2.getpixel((x, y))[0]) > eps:
+					errCount += 1
+					continue
+				if abs(rgbImg1.getpixel((x, y))[1] - rgbImg2.getpixel((x, y))[1]) > eps:
+					errCount += 1
+					continue
+				if abs(rgbImg1.getpixel((x, y))[2] - rgbImg2.getpixel((x, y))[2]) > eps:
+					errCount += 1
+					continue
+
+	if float(errCount / (rgbImg1.size[0] * rgbImg1.size[1])) > threshold:
+		print("Mismatch")
+		exit(-2)
+
+	print("Pass")

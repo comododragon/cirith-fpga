@@ -1,0 +1,22 @@
+{
+	"loopid": 0,
+	"vivado-otherloops": [0, 0],
+	"platform": "zcu104",
+	"part": "xczu7ev-ffvc1156-2-e",
+	"frequencies": [100],
+	"loops": [
+		{
+			"line": 31,
+			"bound": 1035840,
+			"unrolling": [],
+			"pipelining": false,
+			"nest": {}
+		}
+	],
+	"arrays": {
+		"img": {"words": 1035840, "type": "unsigned int", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"hist": {"words": 1048576, "type": "char", "size": 1, "block": [], "cyclic": [], "complete": false, "writeonly": true}
+	},
+	"inarrays": {},
+	"offchip": ["img"]
+}

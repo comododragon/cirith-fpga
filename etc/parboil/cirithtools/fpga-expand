@@ -1,0 +1,57 @@
+#!/bin/bash
+
+set -e
+
+if [ $# -ne 3 ]; then
+	echo "Usage: $0 KERNEL LINASETUP KNOB" >&2
+	exit -1
+fi
+
+RBWUNROLL=0
+EXPLVEC=0
+KNOBFOLDER="knob$3"
+CODE=$(readlink outcomes/experiment1/$1/opt)
+
+if [ $3 -eq 0 ]; then
+	echo "Knob 0: Only standard SDx/Vivado directives are used"
+elif [ $3 -eq 1 ]; then
+	echo "Knob 1: Loop body is transformed to have all offchip reads before writes (RBWUNROLL)"
+	RBWUNROLL=1
+elif [ $3 -eq 2 ]; then
+	echo "Knob 2: Loop body is transformed to use vectorised offchip access (EXPLVEC)"
+	EXPLVEC=1
+elif [ $3 -eq 3 ]; then
+	echo "Knob 3: knobs 1 and 2 together:"
+	echo "    Knob 1: Loop body is transformed to have all offchip reads before writes (RBWUNROLL)"
+	echo "    Knob 2: Loop body is transformed to use vectorised offchip access (EXPLVEC)"
+	RBWUNROLL=1
+	EXPLVEC=1
+else
+	echo "Unrecognised knob: $3" >&2
+	exit -2
+fi
+
+ln -s ../outcomes/experiment1/$1/opt/vivado/common $KNOBFOLDER/common
+ln -s ../outcomes/experiment1/$1/opt/vivado/datasets $KNOBFOLDER/datasets
+ln -s ../outcomes/experiment1/$1/opt/vivado/zynprof $KNOBFOLDER/zynprof
+ln -s ../outcomes/experiment1/$1/opt/vivado/zyncalc $KNOBFOLDER/zyncalc
+cp -pr outcomes/experiment1/$1/opt/vivado/benchmarks $KNOBFOLDER
+
+echo "NOTE: cirith maintains different codegen repositories for each Lina setup" >&2
+echo "      (e.g. this run will use $CDG_ROOTD/$2 as \$CDG_ROOTD)" >&2
+echo "      The difference between each repository is more related to the memory" >&2
+echo "      analyses performed by Lina (i.e. the memanalysis.rpt files might differ)" >&2
+echo "      However, the manual transformation might be the same among all setups," >&2
+echo "      therefore before manipulating the kernel, check if there isn't already an" >&2
+echo "      implemented kernel with the same code (e.g. f200_0.1.0.0_...), same manual" >&2
+echo "      transforms enabled (e.g. rbwUnroll1_explVec0) from the same kernel and" >&2
+echo "      experiment. More specifically, check for these folders:" >&2
+echo "" >&2
+echo "      \$CDG_ROOTD/*/<experiment>/<kernel>/<code>/<rbwUnrollX_explVecY>/" >&2
+echo "" >&2
+echo "      if such similar project is found, its kernel files can probably be reused" >&2
+echo "      (manual copy/paste from one repo to another is necessary, I'm sorry for the" >&2
+echo "      inconvenience :( we are under construction)" >&2
+_CDG_ROOTD=$CDG_ROOTD
+# With CDG_REMOVE_FILES=yes, when creating links, codegen will remove the destination file if it exists
+env CDG_ROOTD=$_CDG_ROOTD/$2 CDG_REMOVE_FILES=yes ./codegen.py experiment1 $1 $CODE $RBWUNROLL $EXPLVEC sources/experiment1_base/$1/vivado $KNOBFOLDER

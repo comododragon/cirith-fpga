@@ -1,0 +1,7 @@
+{
+	"makefile": ["Makefile", "benchmarks/sgemm/src/sdx_zcu104/Makefile", "benchmarks/sgemm/src/sdx_zcu104/hls_hook.tcl"],
+	"clsource": "benchmarks/sgemm/src/sdx_zcu104/sgemm.cl",
+	"patches": {
+		"en-expl-unroll-writeback-loops": true
+	}
+}

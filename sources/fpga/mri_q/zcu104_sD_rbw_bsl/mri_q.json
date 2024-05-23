@@ -1,0 +1,37 @@
+{
+	"loopid": 0,
+	"vivado-otherloops": [1, 0],
+	"platform": "zcu104",
+	"part": "xczu7ev-ffvc1156-2-e",
+	"frequencies": [100],
+	"loops": [
+		{
+			"line": 40,
+			"bound": 256,
+			"unrolling": [],
+			"pipelining": false,
+			"nest": {
+				"line": 41,
+				"bound": 32768,
+				"unrolling": [],
+				"pipelining": false,
+				"nest": {}
+			}
+		}
+	],
+	"arrays": {
+		"kx": {"words": 256, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"ky": {"words": 256, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"kz": {"words": 256, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"phiMag": {"words": 256, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"x": {"words": 32768, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"y": {"words": 32768, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"z": {"words": 32768, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "readonly": true},
+		"Qr": {"words": 32768, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "writeonly": true},
+		"Qi": {"words": 32768, "type": "float", "size": 4, "block": [], "cyclic": [], "complete": false, "writeonly": true}
+	},
+	"inarrays": {
+		"_sinLT": {"words": 31415, "type": "unsigned", "size": 4, "block": [], "cyclic": [], "complete": false}
+	},
+	"offchip": ["kx", "ky", "kz", "phiMag", "x", "y", "z"]
+}

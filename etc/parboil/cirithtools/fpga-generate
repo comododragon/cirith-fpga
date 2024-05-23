@@ -1,0 +1,59 @@
+#!/bin/bash
+
+set -e
+
+if [ $# -ne 8 ]; then
+	echo "Usage: $0 KERNEL SRC EXP STP LINABUFFSCNRO LINAVECTORISE LINABANKING LINADDRPOLICY" >&2
+	exit -1
+fi
+
+cp -p etc/lina/linatools/run.py experiments/fpga/$1/$3/$4
+ln -s ../../../../../etc/lina/llvm/tools/lina/misc/largedse/utils experiments/fpga/$1/$3/$4
+mkdir -p experiments/fpga/$1/$3/$4/sources/experiment1/$1
+mkdir -p experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/lina
+cp -pr sources/fpga/$1/$2/lina/benchmarks experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/lina/benchmarks
+cp -p sources/fpga/$1/$2/lina/Makefile experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/lina/Makefile
+ln -s ../../../../../../../../../../sources/fpga/$1/$2/lina/common experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/lina/common
+ln -s ../../../../../../../../../../sources/fpga/$1/$2/lina/datasets experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/lina/datasets
+cp -p sources/fpga/$1/$2/Makefile experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/Makefile
+cp -p sources/fpga/$1/$2/$1.json experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/$1.json
+cp -p etc/lina/linatools/paretogen.py experiments/fpga/$1/$3/$4
+cp -p etc/lina/linatools/codegen.py experiments/fpga/$1/$3/$4
+mkdir -p experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado
+cp -pr sources/fpga/$1/$2/vivado/benchmarks experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/benchmarks
+cp -p sources/fpga/$1/$2/vivado/Makefile experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/Makefile
+ln -s ../../../../../../../../../../sources/fpga/$1/$2/vivado/common experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/common
+ln -s ../../../../../../../../../../sources/fpga/$1/$2/vivado/datasets experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/datasets
+cp -p etc/zynprof/zynprof experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/zynprof
+cp -p etc/zynprof/zyncalc experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/zyncalc
+cp -p etc/lina/linatools/codegen.py experiments/fpga/$1/$3/$4
+cp -p sources/fpga/$1/$2/$1.json experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/$1.json
+cp -p sources/fpga/$1/$2/$1.codegen.json experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/$1.codegen.json
+cp -p sources/fpga/$1/$2/$1.paretogen.json experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/$1.paretogen.json
+
+echo -ne "{\n\t\"inherits\": \"experiment1_base/$1\"" > experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+# Due to lina having known issues with R/W offchip arrays, we consider scenario 0 as having all R/W onchip, and all others offchip.
+# In the original .json that comes with the source project, the user should list all NON-R/W arrays in the "offchip" tag (NON-RW ARRAYS!).
+# Then when scenario 1 is selected here, this option is overriden by []. If scenario is 0, then nothing is changed.
+if [ $5 -eq 1 ]; then
+	echo -ne ",\n\t\"offchip\": []" >> experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+fi 
+if [ $6 -eq 1 ]; then
+	echo -ne ",\n\t\"vectorise\": true" >> experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+fi 
+if [ $7 -eq 1 ]; then
+	echo -ne ",\n\t\"banking\": true" >> experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+fi 
+if [ $8 -eq 1 ]; then
+	echo -ne ",\n\t\"ddrpolicy\": 1" >> experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+else
+	echo -ne ",\n\t\"ddrpolicy\": 0" >> experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+fi 
+echo -ne "\n}\n" >> experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.json
+
+echo -ne "{\n\t\"inherits\": \"experiment1_base/$1\"\n}\n" > experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.codegen.json
+
+echo -ne "{\n\t\"inherits\": \"experiment1_base/$1\"\n}\n" > experiments/fpga/$1/$3/$4/sources/experiment1/$1/$1.paretogen.json
+
+# Run run.py to generate the experiment
+(cd experiments/fpga/$1/$3/$4; ./run.py generate experiment1)

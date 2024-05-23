@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+
+
+import os, re, sys
+
+
+appName = os.path.splitext(sys.argv[0])[0].replace("./", "")
+
+
+def parseVivadoReport(rptFileName):
+	parseStartRegex = r" *\| *Loop Name *\| *min *\| *max *\| *Latency *\| *achieved *\| *target *\| *Count *\| *Pipelined *\|"
+	parseRegex = re.compile(r" *\| *- Loop (\d+) *\| *([^ ]+) *\| *([^ ]+) *\| *([^\|]+) *\| *([^ ]+) *\| *([^ ]+) *\| *([^ ]+) *\| *([^ ]+) *\|")
+	parseFinishRegex = r" *\+-*\+-*\+-*\+-*\+-*\+-*\+-*\+-*\+"
+	parseBStartRegex = r" *\| *min *\| *max *\| *min *\| *max *\| *Type *\|"
+	parseBRegex = re.compile(r" *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *[^\|]+ *\|")
+	parse2StartRegex = r" *\| *Name *\| *BRAM_18K *\| *DSP48E *\| *FF *\| *LUT *\| *URAM *\|"
+	parse2Regex = re.compile(r" *\| *Total *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\| *(\d+) *\|")
+	parseState = 0
+
+	numPoints = 0
+	db = {}
+
+	with open(rptFileName, "r") as rpt:
+		allLines = rpt.readlines()
+
+		# Get latency info from the general latency table.
+		for l in allLines:
+			# Search for the cycle report table
+			if 0 == parseState:
+				if re.search(parseBStartRegex, l) is not None:
+					parseState = 1
+			# Cycle report table found, eating the border line
+			elif 1 == parseState:
+				parseState = 2
+			# Parsing cycle count
+			elif 2 == parseState:
+				lineDecoded = parseBRegex.match(l)
+
+				if lineDecoded is None:
+					parseState = 0
+					break
+				else:
+					db["latency"] = {"min": int(lineDecoded.group(1)), "max": int(lineDecoded.group(2))}
+
+		if parseState != 0:
+			raise RuntimeError("Retrieval failed (parseState left as {})".format(parseState))
+		if "latency" not in db:
+			raise RuntimeError("Total latency count not found in report")
+
+		# Get iteration latency info
+		allInfo = []
+		for l in allLines:
+			# Search for the cycle report table
+			if 0 == parseState:
+				if re.search(parseStartRegex, l) is not None:
+					parseState = 1
+			# Cycle report table found, eating the border line
+			elif 1 == parseState:
+				parseState = 2
+			# Parsing cycle count
+			elif 2 == parseState:
+				lineDecoded = parseRegex.match(l)
+
+				if lineDecoded is None:
+					# If the line was not recognised, this may be a subloop count. We just ignore it.
+					# If this is the border of the table, then we break out
+					if re.search(parseFinishRegex, l) is not None:
+						parseState = 0
+						break
+				else:
+					ilSplit = lineDecoded.group(4).split("~")
+
+					elem = {}
+					elem["latency"] = {"min": int(lineDecoded.group(2)), "max": int(lineDecoded.group(3))}
+					elem["il"] = int(lineDecoded.group(4)) if 1 == len(ilSplit) else "[{}; {}]".format(int(ilSplit[0]), int(ilSplit[1]))
+					elem["iia"] = int(lineDecoded.group(5)) if lineDecoded.group(5) != "-" else "---"
+					elem["iit"] = int(lineDecoded.group(6)) if lineDecoded.group(6) != "-" else "---"
+					elem["autopipeline"] = lineDecoded.group(8)
+					allInfo.append(elem)
+
+					if int(lineDecoded.group(1)) != len(allInfo):
+						raise RuntimeError("Loop count not following an incremental sequence")
+
+		# Some sanity check
+		if parseState != 0:
+			raise RuntimeError("Retrieval failed for (parseState left as {})".format(parseState))
+
+		db["loops"] = allInfo
+
+		# Now search for the resources
+		for l in allLines:
+			# Search for the resources report table
+			if 0 == parseState:
+				if re.search(parse2StartRegex, l) is not None:
+					parseState = 1
+			# Resources report table found, now finding for the line containing the totals
+			elif 1 == parseState:
+				lineDecoded = parse2Regex.match(l)
+
+				if lineDecoded is not None:
+					db["resources-hls"] = {
+						"tramb": int(lineDecoded.group(1)),
+						"dsp48": int(lineDecoded.group(2)),
+						"ff": int(lineDecoded.group(3)),
+						"tlut": int(lineDecoded.group(4)),
+						"uram": int(lineDecoded.group(5))
+					}
+
+					parseState = 0
+					break
+
+		if parseState != 0:
+			raise RuntimeError("Retrieval failed for (parseState left as {})".format(parseState))
+
+	return db
+
+
+codeRegex = re.compile(r"([pf])(\d*.?\d+)((_l\d+\.\d+\.\d+\.\d+)+)((_a[^\.]+\.[^\.]+\.\d+)*)")
+loopsRegex = r"(_l\d+\.\d+\.\d+\.\d+)"
+arraysRegex = r"(_a[^\.]+\.[^\.]+\.\d+)"
+loopRegex = re.compile(r"_l(\d+)\.(\d+)\.(\d+)\.(\d+)")
+arrayRegex = re.compile(r"_a([^\.]+)\.([^\.]+)\.(\d+)")
+
+
+def parseCode(f):
+	decoded = codeRegex.match(f)
+	pOrF = decoded.group(1)
+	perFreq = decoded.group(2)
+	loops = decoded.group(3)
+	arrays = decoded.group(5)
+	loopsDecoded = re.findall(loopsRegex, loops)
+	arraysDecoded = re.findall(arraysRegex, arrays)
+
+	code = {}
+	if "f" == pOrF:
+		code["frequency"] = perFreq
+	elif "p" == pOrF:
+		code["period"] = perFreq
+	else:
+		raise RuntimeError("Invalid code found: {}".format(f))
+
+	code["loops"] = []
+	for l in loopsDecoded:
+		loopDecoded = loopRegex.match(l)
+		code["loops"].append({"id": loopDecoded.group(1), "depth": loopDecoded.group(2), "pipelining": loopDecoded.group(3), "unrolling": loopDecoded.group(4)})
+
+	code["arrays"] = []
+	for a in arraysDecoded:
+		arrayDecoded = arrayRegex.match(a)
+		code["arrays"].append({"name": arrayDecoded.group(1), "type": arrayDecoded.group(2), "factor": arrayDecoded.group(3)})
+
+	return code
+
+
+if "__main__" == __name__:
+	if len(sys.argv) != 2:
+		sys.stderr.write("Usage: {} KERNEL\n".format(appName))
+		exit(-1)
+
+	kernel = sys.argv[1]
+
+	rawCode = os.path.basename(os.readlink(os.path.join("..", "outcomes", "experiment1", kernel, "opt")))
+	code = parseCode(rawCode)
+	freq = float(code["frequency"]) if "frequency" in code else 1000.0 / float(code["period"])
+	period = float(code["period"]) if "period" in code else 1000.0 / float(code["frequency"])
+	print("\tConfiguration code of this project: {}".format(rawCode))
+	print("")
+
+	buildPath = os.path.join("benchmarks", kernel, "build")
+	if not os.path.exists(buildPath) or 0 == len(os.listdir(buildPath)):
+		print("\tCould not find the Vivado report for this point")
+		exit(0)
+
+	rptPath = os.path.join(
+		buildPath, os.listdir(buildPath)[0], "_x", "_xocc_compile", kernel, kernel, "solution", ".autopilot", "db", "{}.verbose.rpt".format(kernel)
+	)
+
+	if not os.path.exists(rptPath):
+		print("\tCould not find the Vivado report for this point")
+		exit(0)
+
+	db = parseVivadoReport(rptPath)
+
+	print("\tTotal cycle count:")
+	print("\t\tMin: {}".format(db["latency"]["min"]))
+	print("\t\tMax: {}".format(db["latency"]["max"]))
+	print("\tTarget frequency (MHz): {}".format(freq))
+	print("\tExecution time (ns):")
+	print("\t\tMin: {}".format(float(db["latency"]["min"]) * period))
+	print("\t\tMax: {}".format(float(db["latency"]["max"]) * period))
+
+	for loopID in range(len(db["loops"])):
+		print("")
+		print("\tTop-level loop {}:".format(loopID))
+
+		print("\t\tCycle count:")
+		print("\t\t\tMin: {}".format(db["loops"][loopID]["latency"]["min"]))
+		print("\t\t\tMax: {}".format(db["loops"][loopID]["latency"]["max"]))
+		print("\t\tExecution time (ns):")
+		print("\t\t\tMin: {}".format(float(db["loops"][loopID]["latency"]["min"]) * period))
+		print("\t\t\tMax: {}".format(float(db["loops"][loopID]["latency"]["max"]) * period))
+		print("\t\tIteration latency: {}".format(db["loops"][loopID]["il"]))
+		print("\t\tInitiation interval:")
+		print("\t\t\tAchieved: {}".format(db["loops"][loopID]["iia"]))
+		print("\t\t\t  Target: {}".format(db["loops"][loopID]["iit"]))
+		print("\t\tPipelined? {}".format(db["loops"][loopID]["autopipeline"]))
+
+	print("")
+	print("\tResource estimation from Vivado HLS:")
+	print("\t\t LUT: {}".format(db["resources-hls"]["tlut"]))
+	print("\t\t  FF: {}".format(db["resources-hls"]["ff"]))
+	print("\t\t DSP: {}".format(db["resources-hls"]["dsp48"]))
+	print("\t\tBRAM: {}".format(db["resources-hls"]["tramb"]))

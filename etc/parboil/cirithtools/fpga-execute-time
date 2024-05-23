@@ -1,0 +1,30 @@
+#!/bin/bash
+
+set -e
+
+if [ $# -ne 1 ]; then
+	echo "Usage: $0 COOLDOWN" >&2
+	exit -1
+fi
+
+if [ $1 -gt 0 ]; then
+	echo "Error: \$(COOLDOWN) > 0 not implemented for this platform" >&2
+	exit -2
+fi
+
+if [ ! -e ".tmp2" ]; then
+	echo "Error: \".tmp2\" file not found" >&2
+	echo "       This benchmark uses the power profiling auxiliary files to extract" >&2
+	echo "       time profiling. Please run cirith power profiling first" >&2
+	exit -3
+fi
+
+if [ $((`date +%s` - `stat -L --format %Y .tmp2`)) -gt 300 ]; then
+	echo "Error: \".tmp2\" is older than 5 minutes" >&2
+	echo "       Results might be stale" >&2
+	echo "       Please run cirith power profiling again" >&2
+	exit -4
+fi
+
+echo "[fpga-execute-time] Getting execution time values from the \".tmp2\" file..."
+grep "Timer Wall Time" .tmp2 | sed "s/.*Timer Wall Time *: *\([0-9\.]\+\)/\1/" > .tmp

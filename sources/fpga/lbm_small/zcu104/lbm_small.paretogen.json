@@ -1,0 +1,9 @@
+{
+	"repeated": true,
+	"objectives": ["exectime", "lut", "ff", "dsp", "bram"],
+	"priority": "exectime",
+	"compcodegenmode": {
+		"rbwunroll": false,
+		"explvec": false
+	}
+}
