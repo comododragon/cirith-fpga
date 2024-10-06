@@ -43,13 +43,13 @@ A framework to explore, synthesise, and profile FPGA projects using the
 		1. [configs](#configs)
 			1. [Automatic Variables](#automatic-variables)
 			1. [File Format](#file-format)
-		1. [lina](#etc-lina)
+		1. [lina](#lina-1)
 			1. [ParetoGen](#paretogen)
 			1. [CodeGen](#codegen)
 		1. [parboil](#parboil)
 	1. [experiments](#experiments)
 		1. [workspace](#workspace)
-		1. [sources](#exp-sources)
+		1. [sources](#sources-1)
 		1. [outcomes](#outcomes)
 		1. [knob0, knob1, ...](#knob0-knob1-)
 		1. [csvs](#csvs)
@@ -535,7 +535,7 @@ as well:
 	* `execute`: command to be executed when `stat` command is called. The command can be split into multiple lines;
 		* This is the command that presents several stats about the experiment. Refer to `etc/parboil/cirithtools/fpga-stat` for a working example.
 
-#### <a name="etc-lina" />lina
+#### lina
 
 This is the folder where the lina toolchain should be placed. Usually that means:
 
@@ -719,7 +719,7 @@ a folder for each design point to be explored, plus a `base` folder. The `base` 
 puts all files that are shared during the exploration. The outputs for each design point are placed
 in the design point folders, for example `workspace/experiment1/histo/f100.0_l0.1.0.0_ahist.block.4`.
 
-#### <a name="exp-sources" />sources
+#### sources
 
 The `sources` folder here is assembled based on files present on the root `sources` folder, like the
 JSON files.
