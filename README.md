@@ -4,6 +4,59 @@ A framework to explore, synthesise, and profile FPGA projects using the
 [Lina](https://github.com/comododragon/linaii) estimator.
 
 
+## Table of Contents
+
+1. [Licence](#licence)
+	1. [Parboil Benchmark Licence](#parboil-benchmark-licence)
+1. [Publications](#publications)
+1. [Basic Concepts](#basic-concepts)
+1. [Preparation](#preparation)
+1. [Usage](#usage)
+	1. [Commands](#commands)
+		1. [Generate](#generate)
+		1. [Explore](#explore)
+		1. [Decide](#decide)
+		1. [Synth](#synth)
+		1. [Expand](#expand)
+		1. [Stat](#stat)
+	1. [Options](#options)
+		1. [-h | --help](#-h----help)
+		1. [-s SRC | --source=SRC](#-s-src----sourcesrc)
+		1. [-e EXP | --experiment=EXP](#-e-exp----experimentexp)
+		1. [-f | --force](#-f----force)
+		1. [-F | --force-really](#-f----force-really)
+		1. [-m MASK | --mask=MASK](#-m-mask----maskmask)
+		1. [-k KNOB | --knob=KNOB](#-k-knob----knobknob)
+1. [Environment Variables](#environment-variables)
+1. [Exploration Variants](#exploration-variants)
+1. [Post-decision code transformation](#post-decision-code-transformation)
+1. [Current available kernels](#current-available-kernels)
+1. [Framework Structure](#framework-structure)
+	1. [sources](#sources)
+		1. [lina](#lina)
+		1. [vivado](#vivado)
+		1. [Makefile](#makefile)
+		1. [histo.codegen.json](#histocodegenjson)
+		1. [histo.json](#histojson)
+		1. [histo.paretogen.json](#histoparetogenjson)
+	1. [etc](#etc)
+		1. [configs](#configs)
+			1. [Automatic Variables](#automatic-variables)
+			1. [File Format](#file-format)
+		1. [lina](#etc-lina)
+			1. [ParetoGen](#paretogen)
+			1. [CodeGen](#codegen)
+		1. [parboil](#parboil)
+	1. [experiments](#experiments)
+		1. [workspace](#workspace)
+		1. [sources](#exp-sources)
+		1. [outcomes](#outcomes)
+		1. [knob0, knob1, ...](#knob0-knob1-)
+		1. [csvs](#csvs)
+		1. [codegen.py, paretogen.py, run.py, utils, ...](#codegenpy-paretogenpy-runpy-utils-)
+1. [Acknowledgments](#acknowledgments)
+
+
 ## Licence
 
 This tool is shared under GPL-3.0 licence.
@@ -482,7 +535,7 @@ as well:
 	* `execute`: command to be executed when `stat` command is called. The command can be split into multiple lines;
 		* This is the command that presents several stats about the experiment. Refer to `etc/parboil/cirithtools/fpga-stat` for a working example.
 
-#### lina
+#### <a name="etc-lina" />lina
 
 This is the folder where the lina toolchain should be placed. Usually that means:
 
@@ -666,7 +719,7 @@ a folder for each design point to be explored, plus a `base` folder. The `base` 
 puts all files that are shared during the exploration. The outputs for each design point are placed
 in the design point folders, for example `workspace/experiment1/histo/f100.0_l0.1.0.0_ahist.block.4`.
 
-#### sources
+#### <a name="exp-sources" />sources
 
 The `sources` folder here is assembled based on files present on the root `sources` folder, like the
 JSON files.
