@@ -24,8 +24,8 @@ cp -pr sources/fpga/$1/$2/vivado/benchmarks experiments/fpga/$1/$3/$4/sources/ex
 cp -p sources/fpga/$1/$2/vivado/Makefile experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/Makefile
 ln -s ../../../../../../../../../../sources/fpga/$1/$2/vivado/common experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/common
 ln -s ../../../../../../../../../../sources/fpga/$1/$2/vivado/datasets experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/datasets
-cp -p etc/zynprof/zynprof experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/zynprof
-cp -p etc/zynprof/zyncalc experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/zyncalc
+#cp -p etc/zynprof/zynprof experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/zynprof
+#cp -p etc/zynprof/zyncalc experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/vivado/zyncalc
 cp -p etc/lina/linatools/codegen.py experiments/fpga/$1/$3/$4
 cp -p sources/fpga/$1/$2/$1.json experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/$1.json
 cp -p sources/fpga/$1/$2/$1.codegen.json experiments/fpga/$1/$3/$4/sources/experiment1_base/$1/$1.codegen.json

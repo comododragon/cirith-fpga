@@ -11,14 +11,15 @@ A framework to explore, synthesise, and profile FPGA projects using the
 1. [Publications](#publications)
 1. [Basic Concepts](#basic-concepts)
 1. [Preparation](#preparation)
+1. [Quick Hands-on](#quick-hands-on)
 1. [Usage](#usage)
 	1. [Commands](#commands)
-		1. [Generate](#generate)
-		1. [Explore](#explore)
-		1. [Decide](#decide)
-		1. [Synth](#synth)
-		1. [Expand](#expand)
-		1. [Stat](#stat)
+		1. [generate](#generate)
+		1. [explore](#explore)
+		1. [decide](#decide)
+		1. [synth](#synth)
+		1. [expand](#expand)
+		1. [stat](#stat)
 	1. [Options](#options)
 		1. [-h | --help](#-h----help)
 		1. [-s SRC | --source=SRC](#-s-src----sourcesrc)
@@ -29,8 +30,8 @@ A framework to explore, synthesise, and profile FPGA projects using the
 		1. [-k KNOB | --knob=KNOB](#-k-knob----knobknob)
 1. [Environment Variables](#environment-variables)
 1. [Exploration Variants](#exploration-variants)
-1. [Post-decision code transformation](#post-decision-code-transformation)
-1. [Current available kernels](#current-available-kernels)
+1. [Post-decision Code Transformation](#post-decision-code-transformation)
+1. [Current Available Kernels](#current-available-kernels)
 1. [Framework Structure](#framework-structure)
 	1. [sources](#sources)
 		1. [lina](#lina)
@@ -136,11 +137,17 @@ logic. There is no current documentation for this part. Nonetheless, projects sy
 the `synth` command can still be used, they just need to be manually transferred to the board, using
 for example an SD card.
 
+> **NOTE:** cirith does not perform automatic switching between Lina with and without
+`cachedaemon`. This is left as future work. As of now, two different setups of cirith (i.e. two
+separate folders) are needed.
+
 
 ## Preparation
 
 Ensure you have Xilinx SDSoC 2018.2 installed. Also ensure you have proper libraries for Zynq
 UltraScale+ platform.
+
+> **NOTE:** A valid SDSoC 2018.2 licence is required to synthesise the projects.
 
 Please follow the instructions on the READMEs below to prepare all tools and files:
 - `./etc/lina/README`
@@ -167,6 +174,43 @@ source ./setenv.sh
 unless you put these variables on an `.rc` file or something similar.
 
 
+## Quick Hands-on
+
+Below is a quick tutorial to get you going, using `lbm_small` kernel, source `zcu104`:
+
+1. Set-up your environment according to [Preparation](#preparation);
+1. Open a terminal, cd to the folder where you assembled the `cirith` repository;
+1. Source `./setenv.sh`:
+	```
+	$ source ./setenv.sh
+	```
+1. Generate experiment:
+	```
+	$ ./cirith fpga generate sgemm
+	```
+1. Start exploration. It will run four setups (trace + exploration each):
+	```
+	$ ./cirith fpga explore sgemm
+	```
+1. After exploration, decide the best points:
+	```
+	$ ./cirith fpga decide sgemm
+	```
+1. Synthesise the estimated best points:
+	```
+	$ ./cirith fpga synth sgemm
+	```
+
+At end, there should be four synthesised projects, one for each explored setup. They will be located
+at `experiments/fpga/sgemm/default/*/knob0/benchmarks/sgemm/build/sdx_zcu104_hw/zcu104/sd_card`.
+The content of these folders can be copied to a microSD card and booted on the zcu104 board.
+
+To run the application, simply call the executable with the kernel name. In this case for example:
+```
+$ ./sgemm
+```
+
+
 ## Usage
 
 ```
@@ -178,42 +222,42 @@ cirith fpga COMMAND [OPTION]... KERNEL
 See [here](#options) to understand the options, and [here](#environment-variables) to understand
 the subprocesses environments.
 
-#### Generate
+#### generate
 
 Generate a new experiment from the kernel source.
 
 * **optional OPTIONs:** `-h`, `-s`, `-e`, `-f`, `-F`, `-m`;
 * **default subprocesses environment:** `lina` (`$CIR_LI_*` variables).
 
-#### Explore
+#### explore
 
 Perform design space exploration on an experiment.
 
 * **optional OPTIONs:** `-h`, `-e`, `-m`;
 * **default subprocesses environment:** `lina` (`$CIR_LI_*` variables).
 
-#### Decide
+#### decide
 
 Given an explored design space, decide the best point(s).
 
 * **optional OPTIONs:** `-h`, `-e`, `-m`;
 * **default subprocesses environment:** `vivado` (`$CIR_VI_*` variables).
 
-#### Synth
+#### synth
 
 Synthesise the points selected with "decide".
 
 * **optional OPTIONs:** `-h`, `-e`, `-m`, `-k`;
 * **default subprocesses environment:** `vivado` (`$CIR_VI_*` variables).
 
-#### Expand
+#### expand
 
 Expand a decided design point: apply some code transformations.
 
 * **optional OPTIONs:** `-h`, `-e`, `-m`, `-k`;
 * **default subprocesses environment:** `vivado` (`$CIR_VI_*` variables).
 
-#### Stat
+#### stat
 
 Show information about an experiment.
 
@@ -258,7 +302,7 @@ all generated variants in the experiment if no `-m` | `--mask` is set.
 #### -k KNOB | --knob=KNOB
 
 Perform a post-exploration (actually post-decision) code transformation using knob `KNOB`. See
-[Post-decision code transformation](#post-decision-code-transformation) for more information.
+[Post-decision Code Transformation](#post-decision-code-transformation) for more information.
 
 **Default is 0.**
 
@@ -336,7 +380,7 @@ running any command other than "generate" and "collect" must be a sub-set of the
 during the "generate" option). The "collect" command always iterates over all generated variants.
 
 
-## Post-decision code transformation
+## Post-decision Code Transformation
 
 After executing "decide" for one or more variants of an experiment, you can proceed to directly
 synthesising the selected point.
@@ -371,7 +415,7 @@ The following knobs are currently supported with the Lina backend:
 * **Knob 3:** knobs 1 and 2 together.
 
 
-## Current available kernels
+## Current Available Kernels
 
 The kernels available for exploration are: `histo`, `lbm_small`, `mri_q` and `sgemm`.
 
@@ -494,7 +538,7 @@ presented below are replaced by the actual values related to the current cirith 
 * `$(LPOLICY)`: current banking configuration on current **setup**, either `0` or `1`;
 	* See [here](https://github.com/comododragon/linaii/tree/master?tab=readme-ov-file#ddr-scheduling-policies);
 * `$(KNOB)`: current post-decision **knob** in consideration;
-	* See [Post-decision code transformation](#post-decision-code-transformation) for more information.
+	* See [Post-decision Code Transformation](#post-decision-code-transformation) for more information.
 
 ##### File Format
 
