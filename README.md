@@ -176,7 +176,7 @@ unless you put these variables on an `.rc` file or something similar.
 
 ## Quick Hands-on
 
-Below is a quick tutorial to get you going, using `lbm_small` kernel, source `zcu104`:
+Below is a quick tutorial to get you going, using `sgemm` kernel, source `zcu104`:
 
 1. Set-up your environment according to [Preparation](#preparation);
 1. Open a terminal, cd to the folder where you assembled the `cirith` repository;
