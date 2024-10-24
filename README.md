@@ -115,7 +115,7 @@ Cirith and Lina Mark 2 are referenced in the latest paper:
 
 Details can also be found in my PhD thesis:
 
-* A. Bannwart Perina, "Lina: a fast design optimisation tool for software-based FPGA programming," doctoral dissertation, Universidade de São Paulo, 2022, doi: https://doi.org/10.11606/T.55.2022.tde-23082022-101507.
+* A. Bannwart Perina, "Lina: a fast design optimisation tool for software-based FPGA programming," doctoral dissertation, Universidade de São Paulo, 2022, doi: [10.11606/T.55.2022.tde-23082022-101507](https://doi.org/10.11606/T.55.2022.tde-23082022-101507).
 
 ### Other Related Publications
 
