@@ -110,12 +110,27 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WIT
 
 Cirith and Lina Mark 2 are referenced in the latest paper:
 
-* *A link to this material will be added soon*
+* A. Bannwart Perina, J. Becker and V. Bonato (in press), "Memory Aware Design Optimisation for High-Level Synthesis," in Journal of Signal Processing Systems, 2024, doi: **IN PRESS**.
+	* In press, please wait for further updates.
 
 Details can also be found in my PhD thesis:
 
 * A. Bannwart Perina, "Lina: a fast design optimisation tool for software-based FPGA programming," doctoral dissertation, Universidade de São Paulo, 2022.
 	* **URL:** https://www.teses.usp.br/teses/disponiveis/55/55134/tde-23082022-101507/en.php
+
+### Other Related Publications
+
+Lina Mark 1:
+
+* A. Bannwart Perina, A. Silitonga, J. Becker and V. Bonato, "Fast Resource and Timing Aware Design Optimisation for High-Level Synthesis," in IEEE Transactions on Computers, 2021, doi: [10.1109/TC.2021.3112260](https://doi.org/10.1109/TC.2021.3112260).
+
+A much simpler validation with an early version of Lina was presented in our FPT-2019 paper:
+
+* A. Bannwart Perina, J. Becker and V. Bonato, "Lina: Timing-Constrained High-Level Synthesis Performance Estimator for Fast DSE," 2019 International Conference on Field-Programmable Technology (ICFPT), 2019, pp. 343-346, doi: [10.1109/ICFPT47387.2019.00063](https://doi.org/10.1109/ICFPT47387.2019.00063).
+
+Several parts of Lina were inherited from Lin-analyzer. For more information about Lin-analyzer, please see:
+
+* G. Zhong, A. Prakash, Y. Liang, T. Mitra and S. Niar, "Lin-Analyzer: A high-level performance analysis tool for FPGA-based accelerators," 2016 53nd ACM/EDAC/IEEE Design Automation Conference (DAC), 2016, pp. 1-6, doi: [10.1145/2897937.2898040](https://doi.org/10.1145/2897937.2898040).
 
 
 ## Basic Concepts
