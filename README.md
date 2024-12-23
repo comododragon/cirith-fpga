@@ -110,8 +110,7 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WIT
 
 Cirith and Lina Mark 2 are referenced in the latest paper:
 
-* A. Bannwart Perina, J. Becker and V. Bonato (in press), "Memory Aware Design Optimisation for High-Level Synthesis," in Journal of Signal Processing Systems, 2024, doi: **IN PRESS**.
-	* In press, please wait for further updates.
+* A. Bannwart Perina, J. Becker and V. Bonato, "Memory Aware Design Optimisation for High-Level Synthesis," in Journal of Signal Processing Systems, 2024, doi: [10.1007/s11265-024-01938-3](https://doi.org/10.1007/s11265-024-01938-3).
 
 Details can also be found in my PhD thesis:
 
